@@ -1,6 +1,6 @@
 image:
   repository: apsu/lambda-karpenter
-  tag: "0.1.9"
+  tag: "0.2.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
