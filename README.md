@@ -63,6 +63,17 @@ list-images
 get-image --id <image-id> [--region us-east-3] [--arch arm64] [--latest]
 launch --confirm [--config file.yaml] [flags]
 terminate --id <instance-id> --confirm
+k8s <command> [flags]
+```
+
+K8s subcommands:
+
+```bash
+k8s apply --nodeclass lambdanodeclass.yaml --nodepool nodepool.yaml
+k8s delete --nodeclass lambda-gh200 --nodepool gh200-pool
+k8s status
+k8s nodeclaims
+k8s wait --nodeclaim <name> --timeout 10m
 ```
 
 Example `--config` file:

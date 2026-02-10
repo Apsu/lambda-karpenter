@@ -1,6 +1,6 @@
 image:
   repository: apsu/lambda-karpenter
-  tag: "0.1.0"
+  tag: "0.1.2"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -31,6 +31,7 @@ config:
   apiRps: 1
   launchMinIntervalSeconds: 5
   instanceTypeCacheTtl: 10m
+  featureGates: "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false"
 
 extraEnv: []
 

@@ -37,6 +37,8 @@ func main() {
 		terminateInstances(os.Args[2:])
 	case "get-image":
 		getImage(os.Args[2:])
+	case "k8s":
+		handleK8s(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -53,6 +55,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  get-image --id <image-id> [--region us-east-3]")
 	fmt.Fprintln(os.Stderr, "  launch [--config file.yaml] [--confirm] [flags]")
 	fmt.Fprintln(os.Stderr, "  terminate --id <instance-id> [--confirm]")
+	fmt.Fprintln(os.Stderr, "  k8s <command> [flags]")
 }
 
 func listInstances(args []string) {

@@ -6,28 +6,122 @@ import (
 	"os"
 	"time"
 
+	"flag"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
-	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
 type k8sOptions struct {
 	kubeconfig string
 	context    string
 	namespace  string
+}
+
+func handleK8s(args []string) {
+	fs := flag.NewFlagSet("k8s", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	opts := bindK8sFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		k8sUsage()
+		os.Exit(2)
+	}
+	rest := fs.Args()
+	if len(rest) < 1 {
+		k8sUsage()
+		os.Exit(2)
+	}
+	sub := rest[0]
+	switch sub {
+	case "apply":
+		fs := flag.NewFlagSet("k8s apply", flag.ExitOnError)
+		opts = bindK8sFlags(fs)
+		nodeClass := fs.String("nodeclass", "", "Path to LambdaNodeClass YAML")
+		nodePool := fs.String("nodepool", "", "Path to NodePool YAML")
+		pod := fs.String("pod", "", "Path to Pod YAML (optional)")
+		_ = fs.Parse(rest[1:])
+		var paths []string
+		if *nodeClass != "" {
+			paths = append(paths, *nodeClass)
+		}
+		if *nodePool != "" {
+			paths = append(paths, *nodePool)
+		}
+		if *pod != "" {
+			paths = append(paths, *pod)
+		}
+		if len(paths) == 0 {
+			fatalf("at least one of --nodeclass, --nodepool, or --pod is required")
+		}
+		applyObjects(opts, paths)
+	case "delete":
+		fs := flag.NewFlagSet("k8s delete", flag.ExitOnError)
+		opts = bindK8sFlags(fs)
+		nodeClass := fs.String("nodeclass", "", "LambdaNodeClass name")
+		nodePool := fs.String("nodepool", "", "NodePool name")
+		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
+		_ = fs.Parse(rest[1:])
+		if *nodeClass == "" && *nodePool == "" && *nodeClaim == "" {
+			fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
+		}
+		if *nodeClaim != "" {
+			deleteByName(opts, "NodeClaim", *nodeClaim)
+		}
+		if *nodePool != "" {
+			deleteByName(opts, "NodePool", *nodePool)
+		}
+		if *nodeClass != "" {
+			deleteByName(opts, "LambdaNodeClass", *nodeClass)
+		}
+	case "status":
+		fs := flag.NewFlagSet("k8s status", flag.ExitOnError)
+		opts = bindK8sFlags(fs)
+		_ = fs.Parse(rest[1:])
+		listStatus(opts)
+	case "nodeclaims":
+		fs := flag.NewFlagSet("k8s nodeclaims", flag.ExitOnError)
+		opts = bindK8sFlags(fs)
+		_ = fs.Parse(rest[1:])
+		listNodeClaims(opts)
+	case "wait":
+		fs := flag.NewFlagSet("k8s wait", flag.ExitOnError)
+		opts = bindK8sFlags(fs)
+		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
+		timeout := fs.Duration("timeout", 10*time.Minute, "Timeout")
+		_ = fs.Parse(rest[1:])
+		if *nodeClaim == "" {
+			fatalf("--nodeclaim is required")
+		}
+		waitNodeClaimReady(opts, *nodeClaim, *timeout)
+	default:
+		k8sUsage()
+		os.Exit(2)
+	}
+}
+
+func bindK8sFlags(fs *flag.FlagSet) k8sOptions {
+	opts := k8sOptions{}
+	fs.StringVar(&opts.kubeconfig, "kubeconfig", os.Getenv("KUBECONFIG"), "Path to kubeconfig")
+	fs.StringVar(&opts.context, "context", "", "Kubeconfig context")
+	fs.StringVar(&opts.namespace, "namespace", "karpenter", "Namespace (default karpenter)")
+	return opts
+}
+
+func k8sUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: lambdactl k8s <command> [flags]")
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  apply --nodeclass <file> [--nodepool <file>] [--pod <file>]")
+	fmt.Fprintln(os.Stderr, "  delete --nodeclass <name> [--nodepool <name>] [--nodeclaim <name>]")
+	fmt.Fprintln(os.Stderr, "  status")
+	fmt.Fprintln(os.Stderr, "  nodeclaims")
+	fmt.Fprintln(os.Stderr, "  wait --nodeclaim <name> [--timeout 10m]")
 }
 
 func k8sConfig(kubeconfig, contextName string) (*rest.Config, error) {
@@ -43,15 +137,6 @@ func k8sConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
 	cfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides)
 	return cfg.ClientConfig()
-}
-
-func mustK8sClient(opts k8sOptions) client.Client {
-	cfg, err := k8sConfig(opts.kubeconfig, opts.context)
-	fatalIf(err)
-	scheme := runtime.NewScheme()
-	fatalIf(v1.AddToScheme(scheme))
-	fatalIf(v1alpha1.AddToScheme(scheme))
-	return loMust(client.New(cfg, client.Options{Scheme: scheme}))
 }
 
 func mustDynamic(opts k8sOptions) dynamic.Interface {
@@ -113,21 +198,23 @@ func applyObjects(opts k8sOptions, paths []string) {
 			if gvr.Resource == "" {
 				fatalf("unsupported kind %s", obj.GetKind())
 			}
-			res := dyn.Resource(gvr)
-			name := obj.GetName()
+			var res dynamic.ResourceInterface
 			ns := obj.GetNamespace()
 			if ns != "" {
-				res = res.Namespace(ns)
+				res = dyn.Resource(gvr).Namespace(ns)
+			} else {
+				res = dyn.Resource(gvr)
 			}
-			_, err := res.Get(ctx, name, v1.GetOptions{})
+			name := obj.GetName()
+			_, err := res.Get(ctx, name, metav1.GetOptions{})
 			if errors.IsNotFound(err) {
-				_, err = res.Create(ctx, obj, v1.CreateOptions{})
+				_, err = res.Create(ctx, obj, metav1.CreateOptions{})
 				fatalIf(err)
 				fmt.Printf("created %s/%s\n", obj.GetKind(), name)
 				continue
 			}
 			fatalIf(err)
-			_, err = res.Update(ctx, obj, v1.UpdateOptions{})
+			_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
 			fatalIf(err)
 			fmt.Printf("updated %s/%s\n", obj.GetKind(), name)
 		}
@@ -142,7 +229,7 @@ func deleteByName(opts k8sOptions, kind string, name string) {
 		fatalf("unsupported kind %s", kind)
 	}
 	res := dyn.Resource(gvr)
-	if err := res.Delete(ctx, name, v1.DeleteOptions{}); err != nil {
+	if err := res.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		fatalIf(err)
 	}
 	fmt.Printf("deleted %s/%s\n", kind, name)
@@ -175,59 +262,83 @@ func gvrForGVK(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 }
 
 func listStatus(opts k8sOptions) {
-	c := mustK8sClient(opts)
+	dyn := mustDynamic(opts)
 	ctx := context.Background()
 
-	var lncList v1alpha1.LambdaNodeClassList
-	if err := c.List(ctx, &lncList); err == nil {
-		for _, lnc := range lncList.Items {
-			fmt.Printf("LambdaNodeClass/%s\n", lnc.Name)
-		}
+	for _, item := range listByKind(ctx, dyn, "LambdaNodeClass") {
+		fmt.Printf("LambdaNodeClass/%s\n", item.GetName())
 	}
-
-	var npList v1.NodePoolList
-	if err := c.List(ctx, &npList); err == nil {
-		for _, np := range npList.Items {
-			fmt.Printf("NodePool/%s\n", np.Name)
-		}
+	for _, item := range listByKind(ctx, dyn, "NodePool") {
+		fmt.Printf("NodePool/%s\n", item.GetName())
 	}
-
-	var ncList v1.NodeClaimList
-	if err := c.List(ctx, &ncList); err == nil {
-		for _, nc := range ncList.Items {
-			ready := nc.StatusConditions().Get(v1.ConditionTypeInitialized).IsTrue()
-			fmt.Printf("NodeClaim/%s providerID=%s ready=%t\n", nc.Name, nc.Status.ProviderID, ready)
-		}
+	for _, item := range listByKind(ctx, dyn, "NodeClaim") {
+		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
+		ready := hasCondition(item, "Initialized")
+		fmt.Printf("NodeClaim/%s providerID=%s ready=%t\n", item.GetName(), providerID, ready)
 	}
 }
 
 func listNodeClaims(opts k8sOptions) {
-	c := mustK8sClient(opts)
+	dyn := mustDynamic(opts)
 	ctx := context.Background()
-	var ncList v1.NodeClaimList
-	fatalIf(c.List(ctx, &ncList))
-	for _, nc := range ncList.Items {
+	for _, item := range listByKind(ctx, dyn, "NodeClaim") {
+		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
 		fmt.Printf("%s\t%s\tlaunched=%t\tregistered=%t\tinitialized=%t\n",
-			nc.Name,
-			nc.Status.ProviderID,
-			nc.StatusConditions().Get(v1.ConditionTypeLaunched).IsTrue(),
-			nc.StatusConditions().Get(v1.ConditionTypeRegistered).IsTrue(),
-			nc.StatusConditions().Get(v1.ConditionTypeInitialized).IsTrue(),
+			item.GetName(),
+			providerID,
+			hasCondition(item, "Launched"),
+			hasCondition(item, "Registered"),
+			hasCondition(item, "Initialized"),
 		)
 	}
 }
 
 func waitNodeClaimReady(opts k8sOptions, name string, timeout time.Duration) {
-	c := mustK8sClient(opts)
+	dyn := mustDynamic(opts)
 	ctx := context.Background()
-
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		var nc v1.NodeClaim
-		if err := c.Get(ctx, types.NamespacedName{Name: name}, &nc); err != nil {
+		item, err := dyn.Resource(gvrForKind("NodeClaim")).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
 			return false, err
 		}
-		return nc.StatusConditions().Get(v1.ConditionTypeInitialized).IsTrue(), nil
+		return hasCondition(item, "Initialized"), nil
 	})
 	fatalIf(err)
 	fmt.Printf("nodeclaim %s is ready\n", name)
+}
+
+func listByKind(ctx context.Context, dyn dynamic.Interface, kind string) []*unstructured.Unstructured {
+	gvr := gvrForKind(kind)
+	if gvr.Resource == "" {
+		return nil
+	}
+	list, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	out := make([]*unstructured.Unstructured, 0, len(list.Items))
+	for i := range list.Items {
+		item := list.Items[i]
+		out = append(out, &item)
+	}
+	return out
+}
+
+func hasCondition(obj *unstructured.Unstructured, condType string) bool {
+	conds, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if !found {
+		return false
+	}
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		t, _ := m["type"].(string)
+		s, _ := m["status"].(string)
+		if t == condType && s == "True" {
+			return true
+		}
+	}
+	return false
 }

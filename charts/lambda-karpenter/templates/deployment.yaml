@@ -35,6 +35,8 @@ spec:
               value: {{ .Values.config.launchMinIntervalSeconds | quote }}
             - name: INSTANCE_TYPE_CACHE_TTL
               value: {{ .Values.config.instanceTypeCacheTtl | quote }}
+            - name: FEATURE_GATES
+              value: {{ .Values.config.featureGates | quote }}
             - name: LAMBDA_API_TOKEN
               {{- if .Values.config.apiToken }}
               value: {{ .Values.config.apiToken | quote }}

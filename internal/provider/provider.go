@@ -103,19 +103,17 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 }
 
 func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
-	id := parseProviderID(nodeClaim.Status.ProviderID)
-	if id == "" {
-		inst, err := p.findByNodeClaimTag(ctx, nodeClaim.Name)
-		if err != nil {
-			return err
-		}
-		if inst == nil {
-			return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("nodeclaim not found"))
-		}
-		id = inst.ID
+	inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim)
+	if err != nil {
+		return err
 	}
-
-	if err := p.lambda.TerminateInstance(ctx, id); err != nil {
+	if inst == nil || isTerminalInstance(inst) {
+		return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("nodeclaim not found"))
+	}
+	if inst.Status == "terminating" {
+		return nil
+	}
+	if err := p.lambda.TerminateInstance(ctx, inst.ID); err != nil {
 		return err
 	}
 	return nil
@@ -255,6 +253,49 @@ func (p *Provider) findByNodeClaimTag(ctx context.Context, name string) (*lambda
 	return nil, nil
 }
 
+func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v1.NodeClaim) (*lambdaclient.Instance, error) {
+	if nodeClaim.Status.ProviderID != "" {
+		id := parseProviderID(nodeClaim.Status.ProviderID)
+		if id != "" {
+			inst, err := p.lambda.GetInstance(ctx, id)
+			if err == nil {
+				return inst, nil
+			}
+			// Fallback to list in case Get returns a transient error or not-found.
+			inst, err = p.findByInstanceID(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if inst != nil {
+				return inst, nil
+			}
+		}
+	}
+	return p.findByNodeClaimTag(ctx, nodeClaim.Name)
+}
+
+func (p *Provider) findByInstanceID(ctx context.Context, id string) (*lambdaclient.Instance, error) {
+	instances, err := p.lambda.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, inst := range instances {
+		if inst.ID == id {
+			return &inst, nil
+		}
+	}
+	return nil, nil
+}
+
+func isTerminalInstance(inst *lambdaclient.Instance) bool {
+	switch inst.Status {
+	case "terminated", "preempted":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.Instance) *v1.NodeClaim {
 	var nc v1.NodeClaim
 	if seed != nil {
@@ -311,6 +352,8 @@ func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceT
 	if item.InstanceType.Specs.GPUs > 0 {
 		capacity[corev1.ResourceName("nvidia.com/gpu")] = *resource.NewQuantity(int64(item.InstanceType.Specs.GPUs), resource.DecimalSI)
 	}
+	// Set a conservative default max pods to satisfy scheduling requirements.
+	capacity[corev1.ResourcePods] = *resource.NewQuantity(110, resource.DecimalSI)
 
 	return &cloudprovider.InstanceType{
 		Name:         name,

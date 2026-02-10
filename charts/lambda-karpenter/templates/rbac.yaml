@@ -5,10 +5,10 @@ metadata:
   name: {{ include "lambda-karpenter.fullname" . }}
 rules:
   - apiGroups: ["", "apps", "coordination.k8s.io", "events.k8s.io", "policy", "rbac.authorization.k8s.io", "storage.k8s.io"]
-    resources: ["nodes", "pods", "pods/eviction", "events", "leases", "serviceaccounts", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims", "csinodes", "csidrivers", "storageclasses", "volumeattachments", "replicasets", "daemonsets", "statefulsets", "deployments"]
+    resources: ["nodes", "pods", "pods/eviction", "events", "leases", "serviceaccounts", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims", "csinodes", "csidrivers", "storageclasses", "volumeattachments", "replicasets", "daemonsets", "statefulsets", "deployments", "poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["karpenter.sh"]
-    resources: ["nodeclaims", "nodepools", "nodeclasses"]
+    resources: ["nodeclaims", "nodepools", "nodeclasses", "nodeclaims/status", "nodepools/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["karpenter.lambda.cloud"]
     resources: ["lambdanodeclasses", "lambdanodeclasses/status"]
