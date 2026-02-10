@@ -265,23 +265,63 @@ func listStatus(opts k8sOptions) {
 	dyn := mustDynamic(opts)
 	ctx := context.Background()
 
-	for _, item := range listByKind(ctx, dyn, "LambdaNodeClass") {
-		fmt.Printf("LambdaNodeClass/%s\n", item.GetName())
+	nodeClasses := listByKind(ctx, dyn, "LambdaNodeClass")
+	if len(nodeClasses) == 0 {
+		fmt.Println("LambdaNodeClass: none")
+	} else {
+		for _, item := range nodeClasses {
+			fmt.Printf("LambdaNodeClass/%s ready=%t\n", item.GetName(), hasCondition(item, "Ready"))
+		}
 	}
-	for _, item := range listByKind(ctx, dyn, "NodePool") {
-		fmt.Printf("NodePool/%s\n", item.GetName())
+
+	nodePools := listByKind(ctx, dyn, "NodePool")
+	if len(nodePools) == 0 {
+		fmt.Println("NodePool: none")
+	} else {
+		for _, item := range nodePools {
+			nodes, _, _ := unstructured.NestedInt64(item.Object, "status", "nodes")
+			limitsNodes, _, _ := unstructured.NestedInt64(item.Object, "spec", "limits", "nodes")
+			replicas, hasReplicas, _ := unstructured.NestedInt64(item.Object, "spec", "replicas")
+			replicaStr := "dynamic"
+			if hasReplicas {
+				replicaStr = fmt.Sprintf("%d", replicas)
+			}
+			fmt.Printf("NodePool/%s ready=%t nodes=%d limit=%d replicas=%s\n",
+				item.GetName(),
+				hasCondition(item, "Ready"),
+				nodes,
+				limitsNodes,
+				replicaStr,
+			)
+		}
 	}
-	for _, item := range listByKind(ctx, dyn, "NodeClaim") {
-		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
-		ready := hasCondition(item, "Initialized")
-		fmt.Printf("NodeClaim/%s providerID=%s ready=%t\n", item.GetName(), providerID, ready)
+
+	nodeClaims := listByKind(ctx, dyn, "NodeClaim")
+	if len(nodeClaims) == 0 {
+		fmt.Println("NodeClaim: none")
+	} else {
+		for _, item := range nodeClaims {
+			providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
+			fmt.Printf("NodeClaim/%s providerID=%s launched=%t registered=%t initialized=%t\n",
+				item.GetName(),
+				providerID,
+				hasCondition(item, "Launched"),
+				hasCondition(item, "Registered"),
+				hasCondition(item, "Initialized"),
+			)
+		}
 	}
 }
 
 func listNodeClaims(opts k8sOptions) {
 	dyn := mustDynamic(opts)
 	ctx := context.Background()
-	for _, item := range listByKind(ctx, dyn, "NodeClaim") {
+	items := listByKind(ctx, dyn, "NodeClaim")
+	if len(items) == 0 {
+		fmt.Println("no NodeClaims found")
+		return
+	}
+	for _, item := range items {
 		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
 		fmt.Printf("%s\t%s\tlaunched=%t\tregistered=%t\tinitialized=%t\n",
 			item.GetName(),
@@ -313,9 +353,7 @@ func listByKind(ctx context.Context, dyn dynamic.Interface, kind string) []*unst
 		return nil
 	}
 	list, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil
-	}
+	fatalIf(err)
 	out := make([]*unstructured.Unstructured, 0, len(list.Items))
 	for i := range list.Items {
 		item := list.Items[i]

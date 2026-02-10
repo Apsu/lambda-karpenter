@@ -48,7 +48,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: lambdactl <command> [flags]")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  list-instances")
+	fmt.Fprintln(os.Stderr, "  list-instances [--limit N]")
 	fmt.Fprintln(os.Stderr, "  get-instance --id <instance-id>")
 	fmt.Fprintln(os.Stderr, "  list-instance-types")
 	fmt.Fprintln(os.Stderr, "  list-images")
@@ -59,10 +59,30 @@ func usage() {
 }
 
 func listInstances(args []string) {
-	client := mustClient(args)
+	fs := flag.NewFlagSet("list-instances", flag.ExitOnError)
+	limit := fs.Int("limit", 0, "Limit output to N instances (0 = all)")
+	base, token := addCommonFlags(fs)
+	tokenFile := fs.String("token-file", "", "Path to token file")
+	_ = fs.Parse(args)
+
+	if *token == "" && *tokenFile == "" {
+		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
+			*tokenFile = "lambda-eve-karpenter.key"
+		}
+	}
+	if *token == "" && *tokenFile != "" {
+		data, err := os.ReadFile(*tokenFile)
+		fatalIf(err)
+		*token = strings.TrimSpace(string(data))
+	}
+
+	client := mustClientWith(*base, *token)
 	ctx := context.Background()
 	items, err := client.ListInstances(ctx)
 	fatalIf(err)
+	if *limit > 0 && *limit < len(items) {
+		items = items[:*limit]
+	}
 	for _, inst := range items {
 		fmt.Printf("%s\t%s\t%s\t%s\n", inst.ID, inst.Status, inst.Type.Name, inst.Region.Name)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/awslabs/operatorpkg/status"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -24,20 +25,28 @@ const (
 	providerIDPrefix = "lambda://"
 	tagNodeClaim     = "karpenter-sh-nodeclaim"
 	tagNodePool      = "karpenter-sh-nodepool"
+	tagNodeClass     = "karpenter-lambda-cloud-lambdanodeclass"
 	tagCluster       = "karpenter-sh-cluster"
 )
+
+type LambdaAPI interface {
+	ListInstances(ctx context.Context) ([]lambdaclient.Instance, error)
+	GetInstance(ctx context.Context, id string) (*lambdaclient.Instance, error)
+	LaunchInstance(ctx context.Context, req lambdaclient.LaunchRequest) ([]string, error)
+	TerminateInstance(ctx context.Context, id string) error
+}
 
 var _ cloudprovider.CloudProvider = (*Provider)(nil)
 
 // Provider implements the Karpenter CloudProvider interface for Lambda Cloud.
 type Provider struct {
 	kubeClient  client.Client
-	lambda      *lambdaclient.Client
+	lambda      LambdaAPI
 	cache       *lambdaclient.InstanceTypeCache
 	clusterName string
 }
 
-func New(kubeClient client.Client, lambda *lambdaclient.Client, cache *lambdaclient.InstanceTypeCache, clusterName string) *Provider {
+func New(kubeClient client.Client, lambda LambdaAPI, cache *lambdaclient.InstanceTypeCache, clusterName string) *Provider {
 	return &Provider{
 		kubeClient:  kubeClient,
 		lambda:      lambda,
@@ -81,6 +90,10 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 		return p.nodeClaimFromInstance(nc, existing), nil
 	}
 
+	if err := p.enforceNodePoolLimit(ctx, nc); err != nil {
+		return nil, err
+	}
+
 	launchReq, err := p.buildLaunchRequest(nc, class)
 	if err != nil {
 		return nil, err
@@ -102,6 +115,58 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	return p.nodeClaimFromInstance(nc, inst), nil
 }
 
+func (p *Provider) enforceNodePoolLimit(ctx context.Context, nc *v1.NodeClaim) error {
+	npName := ""
+	if nc.Labels != nil {
+		if val, ok := nc.Labels[v1.NodePoolLabelKey]; ok {
+			npName = val
+		}
+	}
+	if npName == "" {
+		return nil
+	}
+
+	var np v1.NodePool
+	if err := p.kubeClient.Get(ctx, types.NamespacedName{Name: npName}, &np); err != nil {
+		return err
+	}
+	if np.Spec.Limits == nil {
+		return nil
+	}
+	limitQty, ok := np.Spec.Limits[corev1.ResourceName("nodes")]
+	if !ok {
+		return nil
+	}
+	limit := limitQty.Value()
+	if limit <= 0 {
+		return nil
+	}
+
+	instances, err := p.lambda.ListInstances(ctx)
+	if err != nil {
+		return err
+	}
+	active := 0
+	for _, inst := range instances {
+		if isTerminalInstance(&inst) {
+			continue
+		}
+		tags := tagsToMap(inst.Tags)
+		if tags[tagCluster] != p.clusterName {
+			continue
+		}
+		if tags[tagNodePool] != npName {
+			continue
+		}
+		active++
+	}
+
+	if int64(active) >= limit {
+		return cloudprovider.NewInsufficientCapacityError(fmt.Errorf("nodepool %s limit %d reached", npName, limit))
+	}
+	return nil
+}
+
 func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 	inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim)
 	if err != nil {
@@ -120,13 +185,20 @@ func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 }
 
 func (p *Provider) Get(ctx context.Context, providerID string) (*v1.NodeClaim, error) {
-	id := parseProviderID(providerID)
-	if id == "" {
+	key := parseProviderID(providerID)
+	if key == "" {
 		return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("invalid provider id"))
 	}
-	inst, err := p.lambda.GetInstance(ctx, id)
+	inst, err := p.lambda.GetInstance(ctx, key)
 	if err != nil {
-		return nil, cloudprovider.NewNodeClaimNotFoundError(err)
+		// Fallback to list in case providerID is hostname or name.
+		inst, err = p.findByInstanceKey(ctx, key)
+		if err != nil {
+			return nil, cloudprovider.NewNodeClaimNotFoundError(err)
+		}
+		if inst == nil {
+			return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("instance %q not found", key))
+		}
 	}
 
 	return p.nodeClaimFromInstance(nil, inst), nil
@@ -200,6 +272,9 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 			if np, ok := nodeClaim.Labels[v1.NodePoolLabelKey]; ok {
 				tags[tagNodePool] = np
 			}
+			if nc, ok := nodeClaim.Labels[v1.NodeClassLabelKey(nodeClaim.Spec.NodeClassRef.GroupKind())]; ok {
+				tags[tagNodeClass] = nc
+			}
 		}
 	}
 	if p.clusterName != "" {
@@ -255,14 +330,14 @@ func (p *Provider) findByNodeClaimTag(ctx context.Context, name string) (*lambda
 
 func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v1.NodeClaim) (*lambdaclient.Instance, error) {
 	if nodeClaim.Status.ProviderID != "" {
-		id := parseProviderID(nodeClaim.Status.ProviderID)
-		if id != "" {
-			inst, err := p.lambda.GetInstance(ctx, id)
+		key := parseProviderID(nodeClaim.Status.ProviderID)
+		if key != "" {
+			inst, err := p.lambda.GetInstance(ctx, key)
 			if err == nil {
 				return inst, nil
 			}
-			// Fallback to list in case Get returns a transient error or not-found.
-			inst, err = p.findByInstanceID(ctx, id)
+			// Fallback to list in case Get returns a transient error or providerID is hostname.
+			inst, err = p.findByInstanceKey(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -274,13 +349,13 @@ func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v
 	return p.findByNodeClaimTag(ctx, nodeClaim.Name)
 }
 
-func (p *Provider) findByInstanceID(ctx context.Context, id string) (*lambdaclient.Instance, error) {
+func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdaclient.Instance, error) {
 	instances, err := p.lambda.ListInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, inst := range instances {
-		if inst.ID == id {
+		if inst.ID == key || inst.Hostname == key || inst.Name == key {
 			return &inst, nil
 		}
 	}
@@ -308,6 +383,17 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 			labels[k] = v
 		}
 	}
+	// Rehydrate core labels from instance tags when seed is nil.
+	if seed == nil {
+		tags := tagsToMap(inst.Tags)
+		if np := tags[tagNodePool]; np != "" {
+			labels[v1.NodePoolLabelKey] = np
+		}
+		if ncName := tags[tagNodeClass]; ncName != "" {
+			labels[v1.NodeClassLabelKey(schema.GroupKind{Group: v1alpha1.Group, Kind: "LambdaNodeClass"})] = ncName
+		}
+		labels[v1.CapacityTypeLabelKey] = v1.CapacityTypeOnDemand
+	}
 	labels[corev1.LabelInstanceTypeStable] = inst.Type.Name
 	if inst.Region.Name != "" {
 		labels[corev1.LabelTopologyRegion] = inst.Region.Name
@@ -315,9 +401,13 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 	}
 
 	nc.Labels = labels
-	nc.Status.ProviderID = providerIDPrefix + inst.ID
+	nc.Status.ProviderID = providerIDForInstance(inst)
 
 	return &nc
+}
+
+func providerIDForInstance(inst *lambdaclient.Instance) string {
+	return providerIDPrefix + inst.ID
 }
 
 func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceTypesItem) *cloudprovider.InstanceType {

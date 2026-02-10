@@ -49,7 +49,11 @@ type Instance struct {
 	IP        string          `json:"ip"`
 	PrivateIP string          `json:"private_ip"`
 	Hostname  string          `json:"hostname"`
+	SSHKeyNames      []string               `json:"ssh_key_names"`
+	FileSystemNames  []string               `json:"file_system_names"`
+	FileSystemMounts []FilesystemMountEntry `json:"file_system_mounts,omitempty"`
 	Tags      []TagEntry      `json:"tags"`
+	Actions   InstanceActionAvailability `json:"actions"`
 	Region    Region          `json:"region"`
 	Type      InstanceTypeRef `json:"instance_type"`
 	CreatedAt time.Time       `json:"created_time"`
@@ -101,6 +105,25 @@ type FirewallRulesetEntry struct {
 	ID string `json:"id"`
 }
 
+type FilesystemMountEntry struct {
+	MountPoint   string `json:"mount_point"`
+	FileSystemID string `json:"file_system_id"`
+}
+
+type InstanceActionAvailability struct {
+	Migrate    InstanceActionAvailabilityDetails `json:"migrate"`
+	Rebuild    InstanceActionAvailabilityDetails `json:"rebuild"`
+	Restart    InstanceActionAvailabilityDetails `json:"restart"`
+	ColdReboot InstanceActionAvailabilityDetails `json:"cold_reboot"`
+	Terminate  InstanceActionAvailabilityDetails `json:"terminate"`
+}
+
+type InstanceActionAvailabilityDetails struct {
+	Available         bool   `json:"available"`
+	ReasonCode        string `json:"reason_code,omitempty"`
+	ReasonDescription string `json:"reason_description,omitempty"`
+}
+
 type ImageSpec struct {
 	ID     string `json:"id,omitempty"`
 	Family string `json:"family,omitempty"`
@@ -113,6 +136,8 @@ type LaunchRequest struct {
 	RegionName       string                 `json:"region_name"`
 	InstanceTypeName string                 `json:"instance_type_name"`
 	UserData         string                 `json:"user_data,omitempty"`
+	FileSystemNames  []string               `json:"file_system_names,omitempty"`
+	FileSystemMounts []FilesystemMountEntry `json:"file_system_mounts,omitempty"`
 	Tags             []TagEntry             `json:"tags,omitempty"`
 	Image            *ImageSpec             `json:"image,omitempty"`
 	SSHKeyNames      []string               `json:"ssh_key_names,omitempty"`

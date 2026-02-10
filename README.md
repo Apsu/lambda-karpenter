@@ -92,6 +92,9 @@ tags:
 
 ## Notes
 
+- Nodes must join the cluster with a `provider-id` that matches the Lambda instance ID (e.g., `lambda://<id>`). The provided cloud-init config reads the instance ID from cloud-init metadata and strips dashes to match the API format.
+- Kubelet should set `node.kubernetes.io/instance-type` to the Lambda instance type (e.g., `gpu_1x_gh200`) to avoid drift.
+
 - This repository targets Karpenter v1.9.0.
 - Lambda tag keys are normalized to match Lambda's tag constraints. Keys like `karpenter.sh/nodeclaim` are converted to `karpenter-sh-nodeclaim`.
 - `lambdactl terminate` is intentionally disabled with an unconditional exit for safety.
