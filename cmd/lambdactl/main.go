@@ -66,16 +66,7 @@ func listInstances(args []string) {
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -98,16 +89,7 @@ func getInstance(args []string) {
 	if *id == "" {
 		fatalf("--id is required")
 	}
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -177,16 +159,7 @@ func getImage(args []string) {
 		fatalf("one of --id, --family, or --name is required")
 	}
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -335,16 +308,7 @@ func launchInstance(args []string) {
 		cfg.Hostname = cfg.Name
 	}
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	req := lambdaclient.LaunchRequest{
@@ -396,16 +360,7 @@ func mustClient(args []string) *lambdaclient.Client {
 	base, token := addCommonFlags(fs)
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 	return mustClientWith(*base, *token)
 }
 
@@ -423,6 +378,19 @@ func mustClientWith(baseURL, token string) *lambdaclient.Client {
 	client, err := lambdaclient.New(baseURL, token, limiter)
 	fatalIf(err)
 	return client
+}
+
+func resolveToken(token *string, tokenFile *string) {
+	if *token == "" && *tokenFile == "" {
+		if _, err := os.Stat("lambda-api.key"); err == nil {
+			*tokenFile = "lambda-api.key"
+		}
+	}
+	if *token == "" && *tokenFile != "" {
+		data, err := os.ReadFile(*tokenFile)
+		fatalIf(err)
+		*token = strings.TrimSpace(string(data))
+	}
 }
 
 func getenvOr(key, def string) string {

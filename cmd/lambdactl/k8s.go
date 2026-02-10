@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"flag"
-	"k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -153,37 +156,33 @@ func loMust[T any](v T, err error) T {
 }
 
 func readUnstructured(path string) ([]*unstructured.Unstructured, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
 	decoder := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	yamlReader := utilyaml.NewYAMLOrJSONDecoder(f, 4096)
 	var objs []*unstructured.Unstructured
-	for _, doc := range splitYAML(data) {
-		if len(doc) == 0 {
+	for {
+		var raw json.RawMessage
+		if err := yamlReader.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		if len(raw) == 0 {
 			continue
 		}
 		obj := &unstructured.Unstructured{}
-		_, _, err := decoder.Decode(doc, nil, obj)
-		if err != nil {
+		if _, _, err := decoder.Decode(raw, nil, obj); err != nil {
 			return nil, err
 		}
 		objs = append(objs, obj)
 	}
 	return objs, nil
-}
-
-func splitYAML(data []byte) [][]byte {
-	var docs [][]byte
-	start := 0
-	for i := 0; i+3 <= len(data); i++ {
-		if string(data[i:i+3]) == "---" {
-			docs = append(docs, data[start:i])
-			start = i + 3
-		}
-	}
-	docs = append(docs, data[start:])
-	return docs
 }
 
 func applyObjects(opts k8sOptions, paths []string) {
@@ -206,17 +205,15 @@ func applyObjects(opts k8sOptions, paths []string) {
 				res = dyn.Resource(gvr)
 			}
 			name := obj.GetName()
-			_, err := res.Get(ctx, name, metav1.GetOptions{})
-			if errors.IsNotFound(err) {
-				_, err = res.Create(ctx, obj, metav1.CreateOptions{})
-				fatalIf(err)
-				fmt.Printf("created %s/%s\n", obj.GetKind(), name)
-				continue
-			}
+			// Clear resourceVersion to avoid conflicts with server-side apply.
+			obj.SetResourceVersion("")
+			obj.SetManagedFields(nil)
+			_, err = res.Apply(ctx, name, obj, metav1.ApplyOptions{
+				FieldManager: "lambdactl",
+				Force:        true,
+			})
 			fatalIf(err)
-			_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
-			fatalIf(err)
-			fmt.Printf("updated %s/%s\n", obj.GetKind(), name)
+			fmt.Printf("applied %s/%s\n", obj.GetKind(), name)
 		}
 	}
 }

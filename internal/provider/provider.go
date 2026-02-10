@@ -7,6 +7,7 @@ import (
 
 	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/status"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,22 +37,32 @@ type LambdaAPI interface {
 	TerminateInstance(ctx context.Context, id string) error
 }
 
+// InstanceLister abstracts cached instance listing. Implemented by
+// *lambdaclient.InstanceListCache and directly by LambdaAPI for testing.
+type InstanceLister interface {
+	List(ctx context.Context) ([]lambdaclient.Instance, error)
+}
+
 var _ cloudprovider.CloudProvider = (*Provider)(nil)
 
 // Provider implements the Karpenter CloudProvider interface for Lambda Cloud.
 type Provider struct {
 	kubeClient  client.Client
 	lambda      LambdaAPI
+	listCache   InstanceLister
 	cache       *lambdaclient.InstanceTypeCache
 	clusterName string
+	log         logr.Logger
 }
 
-func New(kubeClient client.Client, lambda LambdaAPI, cache *lambdaclient.InstanceTypeCache, clusterName string) *Provider {
+func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, cache *lambdaclient.InstanceTypeCache, clusterName string, log logr.Logger) *Provider {
 	return &Provider{
 		kubeClient:  kubeClient,
 		lambda:      lambda,
+		listCache:   listCache,
 		cache:       cache,
 		clusterName: clusterName,
+		log:         log.WithName("lambda-provider"),
 	}
 }
 
@@ -64,15 +75,40 @@ func (p *Provider) GetSupportedNodeClasses() []status.Object {
 }
 
 func (p *Provider) RepairPolicies() []cloudprovider.RepairPolicy {
-	return nil
+	return []cloudprovider.RepairPolicy{
+		{
+			ConditionType:   "Ready",
+			ConditionStatus: corev1.ConditionFalse,
+		},
+	}
 }
 
-func (p *Provider) IsDrifted(context.Context, *v1.NodeClaim) (cloudprovider.DriftReason, error) {
+func (p *Provider) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (cloudprovider.DriftReason, error) {
+	class, err := p.resolveNodeClass(ctx, nodeClaim)
+	if err != nil {
+		return "", err
+	}
+
+	// Check region drift
+	if regionLabel, ok := nodeClaim.Labels[corev1.LabelTopologyRegion]; ok {
+		if class.Spec.Region != "" && regionLabel != class.Spec.Region {
+			return "RegionDrifted", nil
+		}
+	}
+
+	// Check instance type drift
+	if itLabel, ok := nodeClaim.Labels[corev1.LabelInstanceTypeStable]; ok {
+		if class.Spec.InstanceType != "" && itLabel != class.Spec.InstanceType {
+			return "InstanceTypeDrifted", nil
+		}
+	}
+
 	return "", nil
 }
 
 func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.NodeClaim, error) {
 	nc := nodeClaim.DeepCopy()
+	log := p.log.WithValues("nodeclaim", nc.Name)
 
 	class, err := p.resolveNodeClass(ctx, nc)
 	if err != nil {
@@ -87,11 +123,8 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 		return nil, err
 	}
 	if existing != nil {
+		log.V(1).Info("found existing instance by tag", "instanceID", existing.ID)
 		return p.nodeClaimFromInstance(nc, existing), nil
-	}
-
-	if err := p.enforceNodePoolLimit(ctx, nc); err != nil {
-		return nil, err
 	}
 
 	launchReq, err := p.buildLaunchRequest(nc, class)
@@ -99,14 +132,22 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 		return nil, err
 	}
 
+	log.Info("launching instance", "region", launchReq.RegionName, "instanceType", launchReq.InstanceTypeName)
 	ids, err := p.lambda.LaunchInstance(ctx, launchReq)
 	if err != nil {
+		instanceCreateTotal.WithLabelValues("error").Inc()
+		if lambdaclient.IsCapacityError(err) {
+			return nil, cloudprovider.NewInsufficientCapacityError(err)
+		}
 		return nil, err
 	}
 	if len(ids) == 0 {
+		instanceCreateTotal.WithLabelValues("error").Inc()
 		return nil, fmt.Errorf("lambda launch returned no instance ids")
 	}
+	instanceCreateTotal.WithLabelValues("success").Inc()
 
+	log.Info("instance launched", "instanceID", ids[0])
 	inst, err := p.lambda.GetInstance(ctx, ids[0])
 	if err != nil {
 		return nil, err
@@ -115,53 +156,8 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	return p.nodeClaimFromInstance(nc, inst), nil
 }
 
-func (p *Provider) enforceNodePoolLimit(ctx context.Context, nc *v1.NodeClaim) error {
-	npName := ""
-	if nc.Labels != nil {
-		if val, ok := nc.Labels[v1.NodePoolLabelKey]; ok {
-			npName = val
-		}
-	}
-	if npName == "" {
-		return nil
-	}
-
-	var np v1.NodePool
-	if err := p.kubeClient.Get(ctx, types.NamespacedName{Name: npName}, &np); err != nil {
-		return err
-	}
-	if np.Spec.Limits == nil {
-		return nil
-	}
-	limitQty, ok := np.Spec.Limits[corev1.ResourceName("nodes")]
-	if !ok {
-		return nil
-	}
-	limit := limitQty.Value()
-	if limit <= 0 {
-		return nil
-	}
-
-	// Prefer Karpenter's view of NodeClaims for limits to stay consistent with scheduling.
-	var nodeClaims v1.NodeClaimList
-	if err := p.kubeClient.List(ctx, &nodeClaims, client.MatchingLabels{v1.NodePoolLabelKey: npName}); err != nil {
-		return err
-	}
-	active := 0
-	for i := range nodeClaims.Items {
-		item := nodeClaims.Items[i]
-		if !item.DeletionTimestamp.IsZero() {
-			continue
-		}
-		active++
-	}
-	if int64(active) >= limit {
-		return cloudprovider.NewInsufficientCapacityError(fmt.Errorf("nodepool %s limit %d reached", npName, limit))
-	}
-	return nil
-}
-
 func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
+	log := p.log.WithValues("nodeclaim", nodeClaim.Name)
 	inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim)
 	if err != nil {
 		return err
@@ -172,9 +168,12 @@ func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 	if inst.Status == "terminating" {
 		return nil
 	}
+	log.Info("terminating instance", "instanceID", inst.ID)
 	if err := p.lambda.TerminateInstance(ctx, inst.ID); err != nil {
+		instanceDeleteTotal.WithLabelValues("error").Inc()
 		return err
 	}
+	instanceDeleteTotal.WithLabelValues("success").Inc()
 	return nil
 }
 
@@ -199,7 +198,7 @@ func (p *Provider) Get(ctx context.Context, providerID string) (*v1.NodeClaim, e
 }
 
 func (p *Provider) List(ctx context.Context) ([]*v1.NodeClaim, error) {
-	instances, err := p.lambda.ListInstances(ctx)
+	instances, err := p.listCache.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -302,11 +301,17 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 			req.FirewallRulesets = append(req.FirewallRulesets, lambdaclient.FirewallRulesetEntry{ID: id})
 		}
 	}
+	if class.Spec.PublicIP != nil {
+		req.PublicIP = class.Spec.PublicIP
+	}
+	if class.Spec.Pool != "" {
+		req.Pool = class.Spec.Pool
+	}
 	return req, nil
 }
 
 func (p *Provider) findByNodeClaimTag(ctx context.Context, name string) (*lambdaclient.Instance, error) {
-	instances, err := p.lambda.ListInstances(ctx)
+	instances, err := p.listCache.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +352,7 @@ func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v
 }
 
 func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdaclient.Instance, error) {
-	instances, err := p.lambda.ListInstances(ctx)
+	instances, err := p.listCache.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +402,8 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 	labels[corev1.LabelInstanceTypeStable] = inst.Type.Name
 	if inst.Region.Name != "" {
 		labels[corev1.LabelTopologyRegion] = inst.Region.Name
-		labels[corev1.LabelTopologyZone] = inst.Region.Name
+		// Synthetic single-zone: Lambda regions don't have availability zones.
+		labels[corev1.LabelTopologyZone] = inst.Region.Name + "a"
 	}
 
 	nc.Labels = labels
@@ -411,8 +417,16 @@ func providerIDForInstance(inst *lambdaclient.Instance) string {
 }
 
 func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceTypesItem) *cloudprovider.InstanceType {
+	// Determine architecture: GH200 is arm64, everything else is amd64.
+	arch := "amd64"
+	if strings.Contains(strings.ToLower(name), "gh200") {
+		arch = "arm64"
+	}
+
 	requirements := scheduling.NewRequirements(
 		scheduling.NewRequirement(corev1.LabelInstanceTypeStable, corev1.NodeSelectorOpIn, name),
+		scheduling.NewRequirement(corev1.LabelOSStable, corev1.NodeSelectorOpIn, "linux"),
+		scheduling.NewRequirement(corev1.LabelArchStable, corev1.NodeSelectorOpIn, arch),
 	)
 
 	offerings := cloudprovider.Offerings{}
@@ -421,9 +435,11 @@ func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceT
 		regions = []lambdaclient.Region{{Name: "unknown"}}
 	}
 	for _, region := range regions {
+		// Synthetic single-zone: Lambda regions don't have availability zones.
+		zone := region.Name + "a"
 		reqs := scheduling.NewRequirements(
 			scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeOnDemand),
-			scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, region.Name),
+			scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, zone),
 			scheduling.NewRequirement(corev1.LabelTopologyRegion, corev1.NodeSelectorOpIn, region.Name),
 		)
 		offerings = append(offerings, &cloudprovider.Offering{

@@ -1,3 +1,14 @@
+# Secrets
 *.key
-/tmp
+
+# Build artifacts
 bin/
+lambdactl
+
+# Generated / temporary
+/tmp
+*.generated.yaml
+rke2.yaml
+
+# IDE / tooling
+.claude/

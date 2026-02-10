@@ -52,7 +52,7 @@ tags:
   role: controller
 EOF
 
-INSTANCE_ID="$(./lambdactl launch --confirm --config "${LAUNCH_CONFIG}" | head -n 1 | tr -d '\r\n')"
+INSTANCE_ID="$("${ROOT_DIR}/lambdactl" launch --confirm --config "${LAUNCH_CONFIG}" | head -n 1 | tr -d '\r\n')"
 if [[ -z "${INSTANCE_ID}" ]]; then
   echo "failed to get instance id from lambdactl output" >&2
   exit 1
@@ -63,7 +63,7 @@ echo "launched instance: ${INSTANCE_ID}"
 if [[ -z "${PUBLIC_ENDPOINT:-}" ]]; then
   echo "waiting for instance to become active and have a public IP..."
   for _ in $(seq 1 120); do
-    OUT="$(./lambdactl get-instance --id "${INSTANCE_ID}" 2>/dev/null || true)"
+    OUT="$("${ROOT_DIR}/lambdactl" get-instance --id "${INSTANCE_ID}" 2>/dev/null || true)"
     STATUS="$(echo "${OUT}" | awk -F' ' '{for(i=1;i<=NF;i++){if($i ~ /^status=/){sub(/^status=/,"",$i);print $i}}}')"
     IP="$(echo "${OUT}" | awk -F' ' '{for(i=1;i<=NF;i++){if($i ~ /^ip=/){sub(/^ip=/,"",$i);print $i}}}')"
     if [[ "${STATUS}" == "active" && -n "${IP}" ]]; then
@@ -85,20 +85,32 @@ if [[ -n "${SSH_KEY_PATH}" ]]; then
 fi
 
 echo "waiting for ssh on ${PUBLIC_ENDPOINT}..."
+SSH_READY=false
 for _ in $(seq 1 180); do
   if ssh "${SSH_OPTS[@]}" "${SSH_USER}@${PUBLIC_ENDPOINT}" "true" >/dev/null 2>&1; then
+    SSH_READY=true
     break
   fi
   sleep 5
 done
+if [[ "${SSH_READY}" != "true" ]]; then
+  echo "timed out waiting for SSH on ${PUBLIC_ENDPOINT}" >&2
+  exit 1
+fi
 
 echo "waiting for /etc/rancher/rke2/rke2.yaml to exist..."
+KUBECONFIG_READY=false
 for _ in $(seq 1 180); do
   if ssh "${SSH_OPTS[@]}" "${SSH_USER}@${PUBLIC_ENDPOINT}" "test -f /etc/rancher/rke2/rke2.yaml" >/dev/null 2>&1; then
+    KUBECONFIG_READY=true
     break
   fi
   sleep 5
 done
+if [[ "${KUBECONFIG_READY}" != "true" ]]; then
+  echo "timed out waiting for /etc/rancher/rke2/rke2.yaml" >&2
+  exit 1
+fi
 
 KUBECONFIG_OUT="${KUBECONFIG_OUT:-${ROOT_DIR}/rke2.yaml}"
 KUBECONFIG_PATH="${WORKDIR}/rke2.yaml"
@@ -112,12 +124,18 @@ fi
 sed -i.bak "s|server: https://127.0.0.1:6443|server: https://${PUBLIC_ENDPOINT}:6443|g" "${KUBECONFIG_PATH}"
 
 echo "waiting for Kubernetes API to be ready..."
+K8S_READY=false
 for _ in $(seq 1 120); do
   if kubectl --kubeconfig "${KUBECONFIG_PATH}" get nodes >/dev/null 2>&1; then
+    K8S_READY=true
     break
   fi
   sleep 5
 done
+if [[ "${K8S_READY}" != "true" ]]; then
+  echo "timed out waiting for Kubernetes API" >&2
+  exit 1
+fi
 
 echo "kubeconfig written to: ${KUBECONFIG_PATH}"
 cp "${KUBECONFIG_PATH}" "${KUBECONFIG_OUT}"
@@ -129,13 +147,17 @@ if [[ -z "${RKE2_SERVER_ADDR}" ]]; then
 fi
 
 if [[ -n "${RKE2_SERVER_ADDR}" ]]; then
-  python3 - <<PY
-import pathlib, re
-src = pathlib.Path("${ROOT_DIR}") / "lambdanodeclass.yaml"
-dst = pathlib.Path("${NODECLASS_OUT}")
+  ROOT_DIR="${ROOT_DIR}" NODECLASS_OUT="${NODECLASS_OUT}" RKE2_SERVER_ADDR="${RKE2_SERVER_ADDR}" RKE2_TOKEN="${RKE2_TOKEN}" python3 - <<'PY'
+import os, pathlib, re
+root_dir = os.environ["ROOT_DIR"]
+nodeclass_out = os.environ["NODECLASS_OUT"]
+rke2_server_addr = os.environ["RKE2_SERVER_ADDR"]
+rke2_token = os.environ["RKE2_TOKEN"]
+src = pathlib.Path(root_dir) / "config" / "samples" / "lambdanodeclass.yaml"
+dst = pathlib.Path(nodeclass_out)
 text = src.read_text()
-text = re.sub(r"^(\\s*server:\\s*).*$", r"\\1https://${RKE2_SERVER_ADDR}:9345", text, flags=re.MULTILINE)
-text = re.sub(r"^(\\s*token:\\s*).*$", r"\\1${RKE2_TOKEN}", text, flags=re.MULTILINE)
+text = re.sub(r"^(\s*server:\s*).*$", r"\1https://" + rke2_server_addr + ":9345", text, flags=re.MULTILINE)
+text = re.sub(r"^(\s*token:\s*).*$", r"\1" + rke2_token, text, flags=re.MULTILINE)
 dst.write_text(text)
 print(f"wrote nodeclass: {dst}")
 PY

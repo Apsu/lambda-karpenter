@@ -8,7 +8,7 @@ spec:
   image:
     family: lambda-stack-24-04
   sshKeyNames:
-    - Eve
+    - REPLACE_WITH_SSH_KEY_NAME
   tags:
     environment: dev
   userData: |
@@ -35,8 +35,8 @@ spec:
           # Normalize UUID-style IDs to the API format (no dashes).
           INSTANCE_ID="$(echo "$INSTANCE_ID" | tr -d '-')"
           cat <<CFG > /etc/rancher/rke2/config.yaml
-          server: https://172.26.133.214:9345
-          token: tust1337
+          server: https://REPLACE_WITH_CONTROLLER_IP:9345
+          token: REPLACE_WITH_RKE2_TOKEN
           kubelet-arg:
             - provider-id=lambda://${INSTANCE_ID}
           node-label:

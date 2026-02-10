@@ -3,9 +3,11 @@ package lambdaclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -249,5 +251,120 @@ func TestListImages(t *testing.T) {
 	}
 	if len(images) != 1 || !strings.EqualFold(images[0].Arch, "arm64") {
 		t.Fatalf("unexpected images: %#v", images)
+	}
+}
+
+// --- Error path tests ---
+
+func TestAPIError404(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error": {"code": "not_found", "message": "instance not found"}}`))
+	})
+	client := newTestClient(t, handler)
+	_, err := client.GetInstance(context.Background(), "i-missing")
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("expected 404 in error, got: %v", err)
+	}
+}
+
+func TestAPIError500Retries(t *testing.T) {
+	var attempts atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error": "internal"}`))
+	})
+	client := newTestClient(t, handler)
+	_, err := client.ListInstances(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("expected multiple retry attempts, got %d", got)
+	}
+}
+
+func TestAPIError429Retries(t *testing.T) {
+	var attempts atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": "rate_limited"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+	})
+	client := newTestClient(t, handler)
+	items, err := client.ListInstances(context.Background())
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if items == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if got := attempts.Load(); got < 3 {
+		t.Fatalf("expected at least 3 attempts, got %d", got)
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Slow handler — context should cancel before response
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	})
+	client := newTestClient(t, handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := client.ListInstances(ctx)
+	if err == nil {
+		t.Fatal("expected error from context cancellation")
+	}
+}
+
+func TestMalformedJSONNotRetried(t *testing.T) {
+	var attempts atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not valid json`))
+	})
+	client := newTestClient(t, handler)
+	_, err := client.ListInstances(context.Background())
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("expected decode error, got: %v", err)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt (no retry for JSON errors), got %d", got)
+	}
+}
+
+func TestIsCapacityError(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{"lambda api POST /api/v1/instance-operations/launch failed: 503: no capacity", true},
+		{"no available instances in region", true},
+		{"lambda api POST /api/v1/instance-operations/launch failed: 503: service unavailable", true},
+		{"lambda api GET /api/v1/instances failed: 404: not found", false},
+		{"connection refused", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.msg, func(t *testing.T) {
+			got := IsCapacityError(fmt.Errorf("%s", tc.msg))
+			if got != tc.want {
+				t.Fatalf("IsCapacityError(%q) = %v, want %v", tc.msg, got, tc.want)
+			}
+		})
 	}
 }

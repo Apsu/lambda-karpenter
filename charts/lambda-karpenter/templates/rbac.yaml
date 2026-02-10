@@ -3,24 +3,61 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ include "lambda-karpenter.fullname" . }}
+  labels:
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["", "apps", "coordination.k8s.io", "events.k8s.io", "policy", "rbac.authorization.k8s.io", "storage.k8s.io"]
-    resources: ["nodes", "pods", "pods/eviction", "events", "leases", "serviceaccounts", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims", "csinodes", "csidrivers", "storageclasses", "volumeattachments", "replicasets", "daemonsets", "statefulsets", "deployments", "poddisruptionbudgets"]
+  # Nodes: full CRUD for lifecycle management
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/status", "nodes/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pods: read + eviction for draining
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Events: create/patch for recording events
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Coordination: leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Scheduling read-only
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "daemonsets", "statefulsets", "deployments"]
+    verbs: ["get", "list", "watch"]
+  # Storage read-only
+  - apiGroups: [""]
+    resources: ["persistentvolumes", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes", "csidrivers", "storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  # PDBs read-only
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  # Karpenter core resources
   - apiGroups: ["karpenter.sh"]
     resources: ["nodeclaims", "nodepools", "nodeclasses", "nodeclaims/status", "nodepools/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Lambda NodeClass
   - apiGroups: ["karpenter.lambda.cloud"]
     resources: ["lambdanodeclasses", "lambdanodeclasses/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: {{ include "lambda-karpenter.fullname" . }}
+  labels:
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

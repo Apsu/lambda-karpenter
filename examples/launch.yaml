@@ -1,0 +1,9 @@
+name: gh200-test
+hostname: gh200-test
+region: us-east-3
+instanceType: gpu_1x_gh200
+imageFamily: lambda-stack-24-04
+sshKeyNames:
+  - Eve
+tags:
+  purpose: gh200-test

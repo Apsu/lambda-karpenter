@@ -32,14 +32,19 @@ func (l *Limiter) Wait(ctx context.Context) error {
 }
 
 // WaitLaunch enforces a minimum spacing between launch requests.
+// The mutex is not held during the sleep to avoid blocking other goroutines.
 func (l *Limiter) WaitLaunch(ctx context.Context) error {
 	l.launchMu.Lock()
-	defer l.launchMu.Unlock()
-
 	now := time.Now()
 	next := l.lastLaunch.Add(l.launchMin)
+	wait := time.Duration(0)
 	if now.Before(next) {
-		t := time.NewTimer(next.Sub(now))
+		wait = next.Sub(now)
+	}
+	l.launchMu.Unlock()
+
+	if wait > 0 {
+		t := time.NewTimer(wait)
 		select {
 		case <-t.C:
 		case <-ctx.Done():
@@ -47,6 +52,9 @@ func (l *Limiter) WaitLaunch(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+
+	l.launchMu.Lock()
 	l.lastLaunch = time.Now()
+	l.launchMu.Unlock()
 	return nil
 }
