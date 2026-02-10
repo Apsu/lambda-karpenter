@@ -1,0 +1,14 @@
+apiVersion: karpenter.lambda.cloud/v1alpha1
+kind: LambdaNodeClass
+metadata:
+  name: lambda-default
+spec:
+  region: us-west-1
+  instanceType: gpu_1x_a10
+  image:
+    family: ubuntu-lts
+  sshKeyNames:
+    - default
+  publicIP: false
+  tags:
+    environment: dev

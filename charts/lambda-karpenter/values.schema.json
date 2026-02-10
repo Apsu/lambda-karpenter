@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string"},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string"}
+      }
+    },
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"}
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "clusterName": {"type": "string"},
+        "apiToken": {"type": "string"},
+        "apiTokenSecret": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "key": {"type": "string"}
+          }
+        },
+        "apiBaseUrl": {"type": "string"},
+        "apiRps": {"type": "integer"},
+        "launchMinIntervalSeconds": {"type": "integer"},
+        "instanceTypeCacheTtl": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+lambda-karpenter has been installed.
+
+Ensure the controller has credentials:
+- set .Values.config.apiToken or .Values.config.apiTokenSecret
+- set .Values.config.clusterName
+
+Example:
+  helm upgrade --install lambda-karpenter ./charts/lambda-karpenter \
+    --namespace karpenter --create-namespace \
+    --set config.clusterName=<cluster-name> \
+    --set config.apiTokenSecret.name=lambda-api \
+    --set config.apiTokenSecret.key=token

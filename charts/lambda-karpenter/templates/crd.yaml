@@ -1,0 +1,5 @@
+{{- if .Values.crds.install -}}
+{{- .Files.Get "crd/lambdanodeclass.yaml" | nindent 0 -}}
+---
+{{- .Files.Get "crd/karpenter-nodeclaims-nodepools.yaml" | nindent 0 -}}
+{{- end -}}

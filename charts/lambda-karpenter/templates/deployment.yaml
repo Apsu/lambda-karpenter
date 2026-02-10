@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lambda-karpenter.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "lambda-karpenter.serviceAccountName" . }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PROVIDER_CLUSTER_NAME
+              value: {{ .Values.config.clusterName | quote }}
+            - name: LAMBDA_API_BASE_URL
+              value: {{ .Values.config.apiBaseUrl | quote }}
+            - name: LAMBDA_API_RPS
+              value: {{ .Values.config.apiRps | quote }}
+            - name: LAMBDA_LAUNCH_MIN_INTERVAL_SECONDS
+              value: {{ .Values.config.launchMinIntervalSeconds | quote }}
+            - name: INSTANCE_TYPE_CACHE_TTL
+              value: {{ .Values.config.instanceTypeCacheTtl | quote }}
+            - name: LAMBDA_API_TOKEN
+              {{- if .Values.config.apiToken }}
+              value: {{ .Values.config.apiToken | quote }}
+              {{- else if .Values.config.apiTokenSecret.name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.apiTokenSecret.name | quote }}
+                  key: {{ .Values.config.apiTokenSecret.key | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
+          {{- with .Values.extraEnv }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

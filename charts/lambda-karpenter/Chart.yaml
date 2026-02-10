@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lambda-karpenter
+description: Karpenter provider for Lambda Cloud
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

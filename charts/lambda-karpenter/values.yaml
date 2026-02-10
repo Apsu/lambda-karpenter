@@ -1,0 +1,38 @@
+image:
+  repository: apsu/lambda-karpenter
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+config:
+  clusterName: ""
+  apiToken: ""
+  apiTokenSecret:
+    name: ""
+    key: "token"
+  apiBaseUrl: "https://cloud.lambda.ai"
+  apiRps: 1
+  launchMinIntervalSeconds: 5
+  instanceTypeCacheTtl: 10m
+
+extraEnv: []
+
+crds:
+  install: true
