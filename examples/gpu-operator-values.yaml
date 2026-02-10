@@ -1,0 +1,28 @@
+toolkit:
+  env:
+    - name: CONTAINERD_SOCKET
+      value: /run/k3s/containerd/containerd.sock
+
+driver:
+  enabled: false
+
+daemonsets:
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "karpenter.sh/unregistered"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+devicePlugin:
+  env:
+    - name: DEVICE_LIST_STRATEGY
+      value: volume-mounts
+
+node-feature-discovery:
+  worker:
+    tolerations:
+      - key: "karpenter.sh/unregistered"
+        operator: "Exists"
+        effect: "NoSchedule"

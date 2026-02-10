@@ -222,7 +222,12 @@ func (p *Provider) List(ctx context.Context) ([]*v1.NodeClaim, error) {
 	return out, nil
 }
 
-func (p *Provider) GetInstanceTypes(ctx context.Context, _ *v1.NodePool) ([]*cloudprovider.InstanceType, error) {
+func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) ([]*cloudprovider.InstanceType, error) {
+	if skip, err := p.shouldSkipInstanceTypes(ctx, nodePool); err != nil {
+		return nil, err
+	} else if skip {
+		return []*cloudprovider.InstanceType{}, nil
+	}
 	items, err := p.cache.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -232,6 +237,40 @@ func (p *Provider) GetInstanceTypes(ctx context.Context, _ *v1.NodePool) ([]*clo
 		instanceTypes = append(instanceTypes, p.instanceTypeFromItem(name, item))
 	}
 	return instanceTypes, nil
+}
+
+func (p *Provider) shouldSkipInstanceTypes(ctx context.Context, nodePool *v1.NodePool) (bool, error) {
+	if nodePool == nil {
+		return false, nil
+	}
+	limitQty, ok := nodePool.Spec.Limits[corev1.ResourceName("nodes")]
+	if !ok {
+		return false, nil
+	}
+	limit := limitQty.Value()
+	if limit <= 0 {
+		return false, nil
+	}
+
+	instances, err := p.lambda.ListInstances(ctx)
+	if err != nil {
+		return false, err
+	}
+	active := 0
+	for _, inst := range instances {
+		if isTerminalInstance(&inst) {
+			continue
+		}
+		tags := tagsToMap(inst.Tags)
+		if tags[tagCluster] != p.clusterName {
+			continue
+		}
+		if tags[tagNodePool] != nodePool.Name {
+			continue
+		}
+		active++
+	}
+	return int64(active) >= limit, nil
 }
 
 func (p *Provider) resolveNodeClass(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1alpha1.LambdaNodeClass, error) {
@@ -317,6 +356,9 @@ func (p *Provider) findByNodeClaimTag(ctx context.Context, name string) (*lambda
 		return nil, err
 	}
 	for _, inst := range instances {
+		if isTerminalInstance(&inst) {
+			continue
+		}
 		tags := tagsToMap(inst.Tags)
 		if tags[tagCluster] != p.clusterName {
 			continue
@@ -355,6 +397,9 @@ func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdacl
 		return nil, err
 	}
 	for _, inst := range instances {
+		if isTerminalInstance(&inst) {
+			continue
+		}
 		if inst.ID == key || inst.Hostname == key || inst.Name == key {
 			return &inst, nil
 		}
@@ -364,7 +409,7 @@ func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdacl
 
 func isTerminalInstance(inst *lambdaclient.Instance) bool {
 	switch inst.Status {
-	case "terminated", "preempted":
+	case "terminated", "preempted", "unhealthy":
 		return true
 	default:
 		return false

@@ -21,6 +21,7 @@ go run ./cmd/manager
 
 Install the provider controller using the Helm chart. This chart also installs the Karpenter
 `NodeClaim` and `NodePool` CRDs. Do not install the AWS Karpenter controller chart.
+CRDs are shipped only in the Helm chart; there is no separate `config/crd` install path.
 
 ```bash
 helm upgrade --install lambda-karpenter ./charts/lambda-karpenter \
@@ -35,6 +36,70 @@ Create the token secret:
 ```bash
 kubectl -n karpenter create secret generic lambda-api \
   --from-literal=token=<your-token>
+```
+
+## GPU operator
+
+If you're running GPU workloads, install the NVIDIA GPU Operator with a toleration
+for Karpenter's unregistered taint so device plugins can start before the taint is removed.
+
+```bash
+helm upgrade --install gpu-operator nvidia/gpu-operator \
+  --namespace gpu-operator --create-namespace \
+  --version v25.10.1 \
+  -f examples/gpu-operator-values.yaml
+```
+
+## Bootstrap controller node
+
+If you want to launch a fresh controller node and bootstrap RKE2, use
+`examples/bootstrap-controller-cloud-init.yaml`. This config:
+
+- Installs and starts `rke2-server`
+- Sets `cni: flannel`
+
+Replace these placeholders before launch:
+
+- `REPLACE_WITH_RKE2_TOKEN`
+
+Helper script (launch + render cloud-init):
+
+```bash
+export RKE2_TOKEN=...
+export PUBLIC_ENDPOINT=... # optional; auto-resolved if unset
+export REGION=us-east-3
+export INSTANCE_TYPE=gpu_1x_gh200
+export IMAGE_FAMILY=lambda-stack-24-04
+export SSH_KEY_NAME=Eve
+export CLUSTER_NAME=gh200-test1
+export SSH_USER=ubuntu           # optional, default ubuntu
+export SSH_KEY_PATH=~/.ssh/id_rsa # optional, if not using ssh-agent
+export RKE2_SERVER_ADDR=...       # optional; private IP for agents (auto-detected if unset)
+export NODECLASS_OUT=./lambdanodeclass.generated.yaml
+
+./examples/bootstrap-controller.sh
+```
+
+The script waits for SSH, downloads `/etc/rancher/rke2/rke2.yaml`, and rewrites the
+API server address to use the public IP.
+
+It also generates a worker NodeClass with the correct `server` and `token` values at
+`$NODECLASS_OUT` (default `./lambdanodeclass.generated.yaml`).
+
+The previous no-SSH bootstrap flow has been archived under `archive/`.
+
+## Deploy to cluster
+
+Once you have a working kubeconfig, you can deploy the GPU operator and lambda-karpenter
+in one step:
+
+```bash
+export KUBECONFIG=./rke2.yaml
+export LAMBDA_API_TOKEN=...
+export CLUSTER_NAME=gh200-test1
+export IMAGE_TAG=0.1.9
+
+./examples/deploy.sh
 ```
 
 ## CLI (Lambda API validation)

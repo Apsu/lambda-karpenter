@@ -1,0 +1,29 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+runcmd:
+  - |
+      set -eu
+      PUBLIC_IP=""
+      for _ in $(seq 1 10); do
+        PUBLIC_IP="$(curl -fsS https://api.ipify.org || true)"
+        if [ -n "$PUBLIC_IP" ]; then
+          break
+        fi
+        sleep 2
+      done
+      mkdir -p /etc/rancher/rke2
+      cat <<CFG > /etc/rancher/rke2/config.yaml
+      token: REPLACE_WITH_RKE2_TOKEN
+      cni: flannel
+      CFG
+      if [ -n "$PUBLIC_IP" ]; then
+        cat <<CFG >> /etc/rancher/rke2/config.yaml
+      tls-san:
+        - ${PUBLIC_IP}
+      CFG
+      fi
+  - curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="server" sh -
+  - systemctl enable rke2-server
+  - systemctl start rke2-server

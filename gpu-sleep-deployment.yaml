@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-sleep
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gpu-sleep
+  template:
+    metadata:
+      labels:
+        app: gpu-sleep
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: gpu-sleep
+          image: ubuntu:22.04
+          command: ["bash", "-lc", "sleep 3600"]
+          resources:
+            limits:
+              nvidia.com/gpu: 1

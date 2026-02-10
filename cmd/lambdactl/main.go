@@ -121,13 +121,24 @@ func listInstanceTypes(args []string) {
 	items, err := client.ListInstanceTypes(ctx)
 	fatalIf(err)
 	for name, item := range items {
-		fmt.Printf("%s\t%d vcpu\t%d GiB\t%d gpu\t$%.2f\tregions=%d\n",
+		regionNames := make([]string, 0, len(item.Regions))
+		for _, region := range item.Regions {
+			if region.Name != "" {
+				regionNames = append(regionNames, region.Name)
+			}
+		}
+		regions := "-"
+		if len(regionNames) > 0 {
+			regions = strings.Join(regionNames, ",")
+		}
+		fmt.Printf("%s\t%d vcpu\t%d GiB\t%d gpu\t$%.2f\tregions=%d [%s]\n",
 			name,
 			item.InstanceType.Specs.VCPUs,
 			item.InstanceType.Specs.MemoryGiB,
 			item.InstanceType.Specs.GPUs,
 			float64(item.InstanceType.PriceCents)/100.0,
 			len(item.Regions),
+			regions,
 		)
 	}
 }

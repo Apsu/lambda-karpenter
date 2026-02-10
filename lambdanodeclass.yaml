@@ -1,0 +1,49 @@
+apiVersion: karpenter.lambda.cloud/v1alpha1
+kind: LambdaNodeClass
+metadata:
+  name: lambda-gh200
+spec:
+  region: us-east-3
+  instanceType: gpu_1x_gh200
+  image:
+    family: lambda-stack-24-04
+  sshKeyNames:
+    - Eve
+  tags:
+    environment: dev
+  userData: |
+    #cloud-config
+    package_update: true
+    package_upgrade: false
+
+    runcmd:
+      - curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
+      - mkdir -p /etc/rancher/rke2
+      - |
+          set -eu
+          INSTANCE_ID=""
+          if [ -f /var/lib/cloud/data/instance-id ]; then
+            INSTANCE_ID="$(cat /var/lib/cloud/data/instance-id | tr -d '\n')"
+          fi
+          if [ -z "$INSTANCE_ID" ] && [ -f /run/cloud-init/.instance-id ]; then
+            INSTANCE_ID="$(cat /run/cloud-init/.instance-id | tr -d '\n')"
+          fi
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "could not determine instance id for provider-id" >&2
+            exit 1
+          fi
+          # Normalize UUID-style IDs to the API format (no dashes).
+          INSTANCE_ID="$(echo "$INSTANCE_ID" | tr -d '-')"
+          cat <<CFG > /etc/rancher/rke2/config.yaml
+          server: https://172.26.133.214:9345
+          token: tust1337
+          kubelet-arg:
+            - provider-id=lambda://${INSTANCE_ID}
+          node-label:
+            - node.kubernetes.io/instance-type=gpu_1x_gh200
+            - topology.kubernetes.io/region=us-east-3
+            - topology.kubernetes.io/zone=us-east-3
+            - karpenter.sh/capacity-type=on-demand
+          CFG
+      - systemctl enable rke2-agent
+      - systemctl start rke2-agent

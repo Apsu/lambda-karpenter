@@ -149,7 +149,8 @@ func TestProviderResolveInstanceByHostnameProviderID(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{
 		listInstances: []lambdaclient.Instance{
-			{ID: "i-1", Hostname: "gh200-pool-xyz"},
+			{ID: "i-1", Hostname: "gh200-pool-xyz", Status: "unhealthy"},
+			{ID: "i-2", Hostname: "gh200-pool-xyz"},
 		},
 	}
 	p := New(client, fakeAPI, nil, "gh200-test1")
@@ -163,7 +164,7 @@ func TestProviderResolveInstanceByHostnameProviderID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveInstanceForNodeClaim: %v", err)
 	}
-	if inst == nil || inst.ID != "i-1" {
+	if inst == nil || inst.ID != "i-2" {
 		t.Fatalf("unexpected instance: %#v", inst)
 	}
 }
