@@ -35,6 +35,7 @@ func (c *InstanceListCache) List(ctx context.Context) ([]Instance, error) {
 		c.mu.RUnlock()
 		return data, nil
 	}
+	stale := c.cache
 	c.mu.RUnlock()
 
 	result, err, _ := c.group.Do("list-instances", func() (any, error) {
@@ -50,6 +51,10 @@ func (c *InstanceListCache) List(ctx context.Context) ([]Instance, error) {
 	})
 
 	if err != nil {
+		// Stale-while-revalidate: return stale data on refresh failure.
+		if stale != nil {
+			return stale, nil
+		}
 		return nil, fmt.Errorf("instance list cache refresh failed: %w", err)
 	}
 	return result.([]Instance), nil

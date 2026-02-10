@@ -153,7 +153,7 @@ root_dir = os.environ["ROOT_DIR"]
 nodeclass_out = os.environ["NODECLASS_OUT"]
 rke2_server_addr = os.environ["RKE2_SERVER_ADDR"]
 rke2_token = os.environ["RKE2_TOKEN"]
-src = pathlib.Path(root_dir) / "config" / "samples" / "lambdanodeclass.yaml"
+src = pathlib.Path(root_dir) / "examples" / "lambdanodeclass.yaml"
 dst = pathlib.Path(nodeclass_out)
 text = src.read_text()
 text = re.sub(r"^(\s*server:\s*).*$", r"\1https://" + rke2_server_addr + ":9345", text, flags=re.MULTILINE)

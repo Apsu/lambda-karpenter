@@ -30,6 +30,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	log.Log.Info("starting lambda-karpenter",
+		"clusterName", cfg.ClusterName,
+		"baseURL", cfg.BaseURL,
+		"rps", cfg.RPS,
+		"launchMinInterval", cfg.LaunchMinInterval,
+		"instanceTypeCacheTTL", cfg.InstanceTypeCacheTTL,
+	)
+
 	ctx, op := operator.NewOperator()
 
 	if err := v1alpha1.AddToScheme(op.GetScheme()); err != nil {

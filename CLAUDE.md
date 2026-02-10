@@ -41,7 +41,7 @@ Two binaries:
 - **`provider/metrics.go`** — Prometheus counters for instance create/delete.
 - **`lambdaclient/`** — HTTP client for Lambda Cloud API v1. Includes retry logic (exponential backoff + jitter for 429/5xx), rate limiting, and context-aware retry loops. Also contains the instance type cache (singleflight + stale-while-revalidate) and instance list cache (singleflight + TTL).
 - **`lambdaclient/metrics.go`** — Prometheus counters and histograms for API request count/latency.
-- **`ratelimit/`** — Two-tier rate limiter: global token bucket (default 1 rps) + launch-specific minimum spacing (default 5s) via channel-based semaphore.
+- **`ratelimit/`** — Two-tier rate limiter: global token bucket (default 1 rps) + launch-specific minimum spacing (default 5s) via slot reservation pattern.
 - **`config/`** — Loads all settings from environment variables (no config files).
 - **`controller/`** — LambdaNodeClass reconciler that validates resources, sets Ready condition, populates image resolution status, and sets LastValidatedAt.
 

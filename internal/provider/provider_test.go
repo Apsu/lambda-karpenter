@@ -286,7 +286,7 @@ func TestProviderIsDrifted(t *testing.T) {
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
-		fakeAPI := &fakeLambda{}
+	fakeAPI := &fakeLambda{}
 	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
 
 	// Not drifted

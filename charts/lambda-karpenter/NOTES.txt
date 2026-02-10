@@ -1,7 +1,7 @@
 lambda-karpenter has been installed.
 
 Ensure the controller has credentials:
-- set .Values.config.apiToken or .Values.config.apiTokenSecret
+- set .Values.config.apiTokenSecret.name and .Values.config.apiTokenSecret.key
 - set .Values.config.clusterName
 
 Example:
