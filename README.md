@@ -98,6 +98,7 @@ export KUBECONFIG=./rke2.yaml
 export LAMBDA_API_TOKEN=...
 export CLUSTER_NAME=gh200-test1
 export IMAGE_TAG=0.1.9
+export NODECLASS_FILE_OVERRIDE=./lambdanodeclass.generated.yaml
 
 ./examples/deploy.sh
 ```

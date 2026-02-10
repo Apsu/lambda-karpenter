@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -120,7 +121,13 @@ func listInstanceTypes(args []string) {
 	ctx := context.Background()
 	items, err := client.ListInstanceTypes(ctx)
 	fatalIf(err)
-	for name, item := range items {
+	names := make([]string, 0, len(items))
+	for name := range items {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		item := items[name]
 		regionNames := make([]string, 0, len(item.Regions))
 		for _, region := range item.Regions {
 			if region.Name != "" {
@@ -129,6 +136,7 @@ func listInstanceTypes(args []string) {
 		}
 		regions := "-"
 		if len(regionNames) > 0 {
+			sort.Strings(regionNames)
 			regions = strings.Join(regionNames, ",")
 		}
 		fmt.Printf("%s\t%d vcpu\t%d GiB\t%d gpu\t$%.2f\tregions=%d [%s]\n",

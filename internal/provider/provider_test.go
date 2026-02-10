@@ -127,6 +127,136 @@ func TestProviderCreateLaunchRequest(t *testing.T) {
 	}
 }
 
+func TestProviderCreateLaunchRequest_NoLimit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "lambda-gh200",
+		},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:        "us-east-3",
+			InstanceType:  "gpu_1x_gh200",
+			SSHKeyNames:   []string{"Eve"},
+			UserData:      "#cloud-config",
+			FirewallRulesetIDs: []string{"fw-1"},
+			Tags: map[string]string{"env": "test"},
+			Image: &v1alpha1.LambdaImage{
+				Family: "lambda-stack-24-04",
+			},
+		},
+	}
+
+	nodePool := &v1.NodePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gh200-pool",
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class, nodePool).Build()
+	fakeAPI := &fakeLambda{
+		instances: map[string]lambdaclient.Instance{
+			"i-1": {ID: "i-1", Hostname: "gh200-pool-abc", Type: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200"}, Region: lambdaclient.Region{Name: "us-east-3"}},
+		},
+		launchIDs: []string{"i-1"},
+	}
+
+	p := New(client, fakeAPI, nil, "gh200-test1")
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gh200-pool-abc",
+			Labels: map[string]string{
+				v1.NodePoolLabelKey: "gh200-pool",
+			},
+		},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  "lambda-gh200",
+			},
+		},
+	}
+
+	if _, err := p.Create(context.Background(), nc); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+}
+
+func TestProviderCreateLaunchRequest_LimitReached(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "lambda-gh200",
+		},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:        "us-east-3",
+			InstanceType:  "gpu_1x_gh200",
+			SSHKeyNames:   []string{"Eve"},
+			UserData:      "#cloud-config",
+		},
+	}
+
+	nodePool := &v1.NodePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gh200-pool",
+		},
+		Spec: v1.NodePoolSpec{
+			Limits: v1.Limits{
+				corev1.ResourceName("nodes"): resource.MustParse("1"),
+			},
+		},
+	}
+
+	existing := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gh200-pool-existing",
+			Labels: map[string]string{
+				v1.NodePoolLabelKey: "gh200-pool",
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class, nodePool, existing).Build()
+	fakeAPI := &fakeLambda{}
+
+	p := New(client, fakeAPI, nil, "gh200-test1")
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gh200-pool-abc",
+			Labels: map[string]string{
+				v1.NodePoolLabelKey: "gh200-pool",
+			},
+		},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  "lambda-gh200",
+			},
+		},
+	}
+
+	if _, err := p.Create(context.Background(), nc); err == nil {
+		t.Fatalf("expected Create to fail due to nodepool limit")
+	}
+}
+
 func TestProviderListFiltersCluster(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{

@@ -18,10 +18,24 @@ GPU_VALUES="${GPU_VALUES:-${ROOT_DIR}/examples/gpu-operator-values.yaml}"
 NODECLASS_FILE="${NODECLASS_FILE:-${ROOT_DIR}/lambdanodeclass.yaml}"
 NODEPOOL_FILE="${NODEPOOL_FILE:-${ROOT_DIR}/nodepool.yaml}"
 
+if [[ -z "${NODECLASS_FILE_OVERRIDE:-}" ]]; then
+  if [[ -f "${ROOT_DIR}/lambdanodeclass.generated.yaml" ]]; then
+    NODECLASS_FILE="${ROOT_DIR}/lambdanodeclass.generated.yaml"
+  fi
+else
+  NODECLASS_FILE="${NODECLASS_FILE_OVERRIDE}"
+fi
+
 if [[ ! -f "${GPU_VALUES}" ]]; then
   echo "gpu-operator values not found: ${GPU_VALUES}" >&2
   exit 1
 fi
+if [[ "${NODECLASS_FILE}" == "${ROOT_DIR}/lambdanodeclass.yaml" ]]; then
+  if rg -q "token: tust1337" "${NODECLASS_FILE}"; then
+    echo "warning: using default lambdanodeclass.yaml with placeholder token; consider NODECLASS_FILE_OVERRIDE=./lambdanodeclass.generated.yaml" >&2
+  fi
+fi
+
 if [[ ! -f "${NODECLASS_FILE}" ]]; then
   echo "nodeclass file not found: ${NODECLASS_FILE}" >&2
   exit 1

@@ -142,25 +142,19 @@ func (p *Provider) enforceNodePoolLimit(ctx context.Context, nc *v1.NodeClaim) e
 		return nil
 	}
 
-	instances, err := p.lambda.ListInstances(ctx)
-	if err != nil {
+	// Prefer Karpenter's view of NodeClaims for limits to stay consistent with scheduling.
+	var nodeClaims v1.NodeClaimList
+	if err := p.kubeClient.List(ctx, &nodeClaims, client.MatchingLabels{v1.NodePoolLabelKey: npName}); err != nil {
 		return err
 	}
 	active := 0
-	for _, inst := range instances {
-		if isTerminalInstance(&inst) {
-			continue
-		}
-		tags := tagsToMap(inst.Tags)
-		if tags[tagCluster] != p.clusterName {
-			continue
-		}
-		if tags[tagNodePool] != npName {
+	for i := range nodeClaims.Items {
+		item := nodeClaims.Items[i]
+		if !item.DeletionTimestamp.IsZero() {
 			continue
 		}
 		active++
 	}
-
 	if int64(active) >= limit {
 		return cloudprovider.NewInsufficientCapacityError(fmt.Errorf("nodepool %s limit %d reached", npName, limit))
 	}
@@ -223,11 +217,6 @@ func (p *Provider) List(ctx context.Context) ([]*v1.NodeClaim, error) {
 }
 
 func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) ([]*cloudprovider.InstanceType, error) {
-	if skip, err := p.shouldSkipInstanceTypes(ctx, nodePool); err != nil {
-		return nil, err
-	} else if skip {
-		return []*cloudprovider.InstanceType{}, nil
-	}
 	items, err := p.cache.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -237,40 +226,6 @@ func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) 
 		instanceTypes = append(instanceTypes, p.instanceTypeFromItem(name, item))
 	}
 	return instanceTypes, nil
-}
-
-func (p *Provider) shouldSkipInstanceTypes(ctx context.Context, nodePool *v1.NodePool) (bool, error) {
-	if nodePool == nil {
-		return false, nil
-	}
-	limitQty, ok := nodePool.Spec.Limits[corev1.ResourceName("nodes")]
-	if !ok {
-		return false, nil
-	}
-	limit := limitQty.Value()
-	if limit <= 0 {
-		return false, nil
-	}
-
-	instances, err := p.lambda.ListInstances(ctx)
-	if err != nil {
-		return false, err
-	}
-	active := 0
-	for _, inst := range instances {
-		if isTerminalInstance(&inst) {
-			continue
-		}
-		tags := tagsToMap(inst.Tags)
-		if tags[tagCluster] != p.clusterName {
-			continue
-		}
-		if tags[tagNodePool] != nodePool.Name {
-			continue
-		}
-		active++
-	}
-	return int64(active) >= limit, nil
 }
 
 func (p *Provider) resolveNodeClass(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1alpha1.LambdaNodeClass, error) {
@@ -409,7 +364,7 @@ func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdacl
 
 func isTerminalInstance(inst *lambdaclient.Instance) bool {
 	switch inst.Status {
-	case "terminated", "preempted", "unhealthy":
+	case "terminated", "preempted", "unhealthy", "terminating":
 		return true
 	default:
 		return false
