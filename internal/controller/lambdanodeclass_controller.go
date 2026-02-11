@@ -64,9 +64,6 @@ func validateNodeClass(nc *v1alpha1.LambdaNodeClass) error {
 	if nc.Spec.Region == "" {
 		return fmt.Errorf("spec.region is required")
 	}
-	if nc.Spec.InstanceType == "" {
-		return fmt.Errorf("spec.instanceType is required")
-	}
 	if len(nc.Spec.SSHKeyNames) == 0 {
 		return fmt.Errorf("spec.sshKeyNames must include at least one entry")
 	}

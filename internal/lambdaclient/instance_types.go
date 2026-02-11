@@ -28,6 +28,14 @@ func NewInstanceTypeCache(client *Client, ttl time.Duration) *InstanceTypeCache 
 	}
 }
 
+// Seed pre-populates the cache with the given data. Used in tests.
+func (c *InstanceTypeCache) Seed(data map[string]InstanceTypesItem) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache = data
+	c.cachedAt = time.Now()
+}
+
 func (c *InstanceTypeCache) Get(ctx context.Context) (map[string]InstanceTypesItem, error) {
 	c.mu.RLock()
 	if time.Since(c.cachedAt) < c.TTL && len(c.cache) > 0 {

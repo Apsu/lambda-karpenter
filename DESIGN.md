@@ -72,6 +72,31 @@ silent misconfiguration while preserving the schema for forward compatibility.
 
 ---
 
+## Instance Type Selection
+
+### Type-agnostic NodeClass
+
+`LambdaNodeClass.spec.instanceType` is optional. When omitted, the NodeClass
+defines *how* instances join the cluster (region, SSH keys, image, userData)
+while the NodePool defines *what* instance types to use via
+`node.kubernetes.io/instance-type` requirements. Multiple NodePools can share
+a single NodeClass, each selecting different instance types.
+
+When `instanceType` is set, `GetInstanceTypes` filters to only that type and
+`buildLaunchRequest` falls back to it — fully backward compatible.
+
+### userData templating
+
+`spec.userData` supports Go `text/template` actions rendered at launch time.
+Available variables: `{{.InstanceType}}`, `{{.Region}}`, `{{.ClusterName}}`,
+`{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{`
+pass through unmodified (fast path). This enables instance-type-specific node
+labels in cloud-init without requiring a separate NodeClass per type.
+
+For bootstrap-time templates (`.tmpl` files), use Go template escaping to
+preserve launch-time variables: `{{ "{{.InstanceType}}" }}` renders to
+`{{.InstanceType}}` at bootstrap, which the provider then renders at launch.
+
 ## GPU Operator Integration
 
 ### No GPU taint

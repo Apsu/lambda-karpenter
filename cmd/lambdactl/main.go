@@ -117,10 +117,11 @@ func (c *ListInstanceTypesCmd) Run() error {
 			sort.Strings(regionNames)
 			regions = strings.Join(regionNames, ",")
 		}
-		fmt.Printf("%s\t%d vcpu\t%d GiB\t%d gpu\t$%.2f\tregions=%d [%s]\n",
+		fmt.Printf("%s\t%d vcpu\t%d GiB mem\t%d GiB storage\t%d gpu\t$%.2f\tregions=%d [%s]\n",
 			name,
 			item.InstanceType.Specs.VCPUs,
 			item.InstanceType.Specs.MemoryGiB,
+			item.InstanceType.Specs.StorageGiB,
 			item.InstanceType.Specs.GPUs,
 			float64(item.InstanceType.PriceCents)/100.0,
 			len(item.Regions),

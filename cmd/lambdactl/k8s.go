@@ -46,19 +46,15 @@ type K8sFlags struct {
 
 type ApplyCmd struct {
 	K8sFlags
-	NodeClass string `name:"nodeclass" help:"Path to LambdaNodeClass YAML."`
-	NodePool  string `name:"nodepool" help:"Path to NodePool YAML."`
-	Pod       string `name:"pod" help:"Path to Pod YAML."`
+	NodeClass []string `name:"nodeclass" help:"Path to LambdaNodeClass YAML (repeatable)." sep:"none"`
+	NodePool  []string `name:"nodepool" help:"Path to NodePool YAML (repeatable)." sep:"none"`
+	Pod       string   `name:"pod" help:"Path to Pod YAML."`
 }
 
 func (c *ApplyCmd) Run() error {
 	var paths []string
-	if c.NodeClass != "" {
-		paths = append(paths, c.NodeClass)
-	}
-	if c.NodePool != "" {
-		paths = append(paths, c.NodePool)
-	}
+	paths = append(paths, c.NodeClass...)
+	paths = append(paths, c.NodePool...)
 	if c.Pod != "" {
 		paths = append(paths, c.Pod)
 	}

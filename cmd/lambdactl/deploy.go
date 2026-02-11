@@ -19,8 +19,8 @@ type DeployCmd struct {
 	LambdaAPIToken     string `name:"lambda-api-token" env:"LAMBDA_API_TOKEN" required:"" help:"Lambda API token for the cluster secret."`
 	GPUValues          string `name:"gpu-values" default:"configs/gpu-operator-values.yaml" help:"Path to GPU operator values file."`
 	GPUOperatorVersion string `name:"gpu-operator-version" env:"GPU_OPERATOR_VERSION" default:"v25.10.1" help:"GPU operator Helm chart version."`
-	NodeclassFile      string `name:"nodeclass-file" default:"configs/lambdanodeclass.yaml" help:"Path to nodeclass YAML."`
-	NodepoolFile       string `name:"nodepool-file" default:"configs/nodepool.yaml" help:"Path to nodepool YAML."`
+	NodeclassFiles     []string `name:"nodeclass-file" help:"Path to nodeclass YAML (repeatable)." sep:"none"`
+	NodepoolFiles      []string `name:"nodepool-file" help:"Path to nodepool YAML (repeatable)." sep:"none"`
 	ImageTag           string `name:"image-tag" env:"VERSION" default:"latest" help:"lambda-karpenter image tag."`
 	ChartPath          string `name:"chart-path" default:"charts/lambda-karpenter" help:"Path to lambda-karpenter Helm chart."`
 	SkipGPUOperator    bool   `name:"skip-gpu-operator" help:"Skip GPU operator installation."`
@@ -99,22 +99,20 @@ func (c *DeployCmd) Run() error {
 	helmLK = appendKubeFlags(helmLK, c.Kubeconfig, c.Context)
 	runHelm(c.DryRun, helmLK)
 
-	// 4. Apply nodeclass + nodepool.
+	// 4. Apply nodeclasses + nodepools.
 	var applyPaths []string
-	if c.NodeclassFile != "" {
-		if _, err := os.Stat(c.NodeclassFile); err == nil {
-			applyPaths = append(applyPaths, c.NodeclassFile)
+	for _, f := range c.NodeclassFiles {
+		if _, err := os.Stat(f); err == nil {
+			applyPaths = append(applyPaths, f)
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: nodeclass file %s not found, skipping\n", c.NodeclassFile)
-			fmt.Fprintf(os.Stderr, "  hint: run 'lambdactl k8s bootstrap' to generate it, or cp examples/lambdanodeclass.yaml %s\n", c.NodeclassFile)
+			fmt.Fprintf(os.Stderr, "warning: nodeclass file %s not found, skipping\n", f)
 		}
 	}
-	if c.NodepoolFile != "" {
-		if _, err := os.Stat(c.NodepoolFile); err == nil {
-			applyPaths = append(applyPaths, c.NodepoolFile)
+	for _, f := range c.NodepoolFiles {
+		if _, err := os.Stat(f); err == nil {
+			applyPaths = append(applyPaths, f)
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: nodepool file %s not found, skipping\n", c.NodepoolFile)
-			fmt.Fprintf(os.Stderr, "  hint: cp examples/nodepool.yaml %s\n", c.NodepoolFile)
+			fmt.Fprintf(os.Stderr, "warning: nodepool file %s not found, skipping\n", f)
 		}
 	}
 

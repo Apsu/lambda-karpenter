@@ -224,6 +224,15 @@ component (coredns, ingress, metrics-server, etc.).
 
 ## Notes
 
+- **NodeClass is instance-type-agnostic.** `spec.instanceType` is optional. When
+  omitted, the NodePool's `node.kubernetes.io/instance-type` requirement drives
+  instance type selection. Multiple NodePools can share one NodeClass. When set,
+  the NodeClass pins to that type (backward compatible).
+- **userData supports Go templates.** Use `{{.InstanceType}}`, `{{.Region}}`,
+  `{{.ClusterName}}`, `{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`
+  in `spec.userData`. Templates are rendered at launch time. Strings without `{{`
+  pass through unchanged. For bootstrap `.tmpl` files, escape launch-time vars:
+  `{{ "{{.InstanceType}}" }}`.
 - Worker nodes join the cluster with `provider-id=lambda://<instance-id>`. The
   example cloud-init reads the instance ID from cloud-init metadata and strips
   dashes to match the API format.
