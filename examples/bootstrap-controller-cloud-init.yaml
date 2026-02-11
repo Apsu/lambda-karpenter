@@ -15,7 +15,7 @@ runcmd:
       done
       mkdir -p /etc/rancher/rke2
       cat <<CFG > /etc/rancher/rke2/config.yaml
-      token: REPLACE_WITH_RKE2_TOKEN
+      token: {{.RKE2Token}}
       cni: flannel
       CFG
       if [ -n "$PUBLIC_IP" ]; then

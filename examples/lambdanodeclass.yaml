@@ -3,12 +3,12 @@ kind: LambdaNodeClass
 metadata:
   name: lambda-gh200
 spec:
-  region: us-east-3
-  instanceType: gpu_1x_gh200
+  region: {{.Region}}
+  instanceType: {{.InstanceType}}
   image:
-    family: lambda-stack-24-04
+    family: {{.ImageFamily}}
   sshKeyNames:
-    - REPLACE_WITH_SSH_KEY_NAME
+    - {{.SSHKeyName}}
   tags:
     environment: dev
   userData: |
@@ -35,14 +35,14 @@ spec:
           # Normalize UUID-style IDs to the API format (no dashes).
           INSTANCE_ID="$(echo "$INSTANCE_ID" | tr -d '-')"
           cat <<CFG > /etc/rancher/rke2/config.yaml
-          server: https://REPLACE_WITH_CONTROLLER_IP:9345
-          token: REPLACE_WITH_RKE2_TOKEN
+          server: https://{{.ControllerIP}}:9345
+          token: {{.RKE2Token}}
           kubelet-arg:
             - provider-id=lambda://${INSTANCE_ID}
           node-label:
-            - node.kubernetes.io/instance-type=gpu_1x_gh200
-            - topology.kubernetes.io/region=us-east-3
-            - topology.kubernetes.io/zone=us-east-3
+            - node.kubernetes.io/instance-type={{.InstanceType}}
+            - topology.kubernetes.io/region={{.Region}}
+            - topology.kubernetes.io/zone={{.Region}}
             - karpenter.sh/capacity-type=on-demand
           CFG
       - systemctl enable rke2-agent

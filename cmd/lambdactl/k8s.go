@@ -17,8 +17,10 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/util/homedir"
 )
 
@@ -29,27 +31,38 @@ type k8sOptions struct {
 }
 
 func handleK8s(args []string) {
-	fs := flag.NewFlagSet("k8s", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	opts := bindK8sFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if len(args) < 1 {
 		k8sUsage()
 		os.Exit(2)
 	}
-	rest := fs.Args()
-	if len(rest) < 1 {
-		k8sUsage()
-		os.Exit(2)
+	sub := args[0]
+	rest := args[1:]
+
+	// New lifecycle commands — handled in their own files.
+	switch sub {
+	case "bootstrap":
+		cmdBootstrap(rest)
+		return
+	case "kubeconfig":
+		cmdKubeconfig(rest)
+		return
+	case "user":
+		handleUser(rest)
+		return
+	case "deploy":
+		cmdDeploy(rest)
+		return
 	}
-	sub := rest[0]
+
+	// Legacy k8s resource commands use shared k8sOptions.
 	switch sub {
 	case "apply":
 		fs := flag.NewFlagSet("k8s apply", flag.ExitOnError)
-		opts = bindK8sFlags(fs)
+		opts := bindK8sFlags(fs)
 		nodeClass := fs.String("nodeclass", "", "Path to LambdaNodeClass YAML")
 		nodePool := fs.String("nodepool", "", "Path to NodePool YAML")
 		pod := fs.String("pod", "", "Path to Pod YAML (optional)")
-		_ = fs.Parse(rest[1:])
+		_ = fs.Parse(rest)
 		var paths []string
 		if *nodeClass != "" {
 			paths = append(paths, *nodeClass)
@@ -66,11 +79,11 @@ func handleK8s(args []string) {
 		applyObjects(opts, paths)
 	case "delete":
 		fs := flag.NewFlagSet("k8s delete", flag.ExitOnError)
-		opts = bindK8sFlags(fs)
+		opts := bindK8sFlags(fs)
 		nodeClass := fs.String("nodeclass", "", "LambdaNodeClass name")
 		nodePool := fs.String("nodepool", "", "NodePool name")
 		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
-		_ = fs.Parse(rest[1:])
+		_ = fs.Parse(rest)
 		if *nodeClass == "" && *nodePool == "" && *nodeClaim == "" {
 			fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
 		}
@@ -85,20 +98,20 @@ func handleK8s(args []string) {
 		}
 	case "status":
 		fs := flag.NewFlagSet("k8s status", flag.ExitOnError)
-		opts = bindK8sFlags(fs)
-		_ = fs.Parse(rest[1:])
+		opts := bindK8sFlags(fs)
+		_ = fs.Parse(rest)
 		listStatus(opts)
 	case "nodeclaims":
 		fs := flag.NewFlagSet("k8s nodeclaims", flag.ExitOnError)
-		opts = bindK8sFlags(fs)
-		_ = fs.Parse(rest[1:])
+		opts := bindK8sFlags(fs)
+		_ = fs.Parse(rest)
 		listNodeClaims(opts)
 	case "wait":
 		fs := flag.NewFlagSet("k8s wait", flag.ExitOnError)
-		opts = bindK8sFlags(fs)
+		opts := bindK8sFlags(fs)
 		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
 		timeout := fs.Duration("timeout", 10*time.Minute, "Timeout")
-		_ = fs.Parse(rest[1:])
+		_ = fs.Parse(rest)
 		if *nodeClaim == "" {
 			fatalf("--nodeclaim is required")
 		}
@@ -119,12 +132,19 @@ func bindK8sFlags(fs *flag.FlagSet) k8sOptions {
 
 func k8sUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: lambdactl k8s <command> [flags]")
-	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  apply --nodeclass <file> [--nodepool <file>] [--pod <file>]")
-	fmt.Fprintln(os.Stderr, "  delete --nodeclass <name> [--nodepool <name>] [--nodeclaim <name>]")
-	fmt.Fprintln(os.Stderr, "  status")
-	fmt.Fprintln(os.Stderr, "  nodeclaims")
-	fmt.Fprintln(os.Stderr, "  wait --nodeclaim <name> [--timeout 10m]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Cluster lifecycle:")
+	fmt.Fprintln(os.Stderr, "  bootstrap      Launch controller, wait for RKE2, extract kubeconfig")
+	fmt.Fprintln(os.Stderr, "  kubeconfig     Extract kubeconfig from existing remote RKE2 node")
+	fmt.Fprintln(os.Stderr, "  user           Manage per-user SA + token kubeconfigs (create/rotate/cleanup)")
+	fmt.Fprintln(os.Stderr, "  deploy         Install GPU operator + lambda-karpenter + apply resources")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Resource management:")
+	fmt.Fprintln(os.Stderr, "  apply          Server-side apply resources (--nodeclass, --nodepool, --pod)")
+	fmt.Fprintln(os.Stderr, "  delete         Delete resources (--nodeclass, --nodepool, --nodeclaim)")
+	fmt.Fprintln(os.Stderr, "  status         Show LambdaNodeClass, NodePool, NodeClaim status")
+	fmt.Fprintln(os.Stderr, "  nodeclaims     List NodeClaim details")
+	fmt.Fprintln(os.Stderr, "  wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)")
 }
 
 func k8sConfig(kubeconfig, contextName string) (*rest.Config, error) {
@@ -146,6 +166,49 @@ func mustDynamic(opts k8sOptions) dynamic.Interface {
 	cfg, err := k8sConfig(opts.kubeconfig, opts.context)
 	fatalIf(err)
 	return loMust(dynamic.NewForConfig(cfg))
+}
+
+func mustDynamicFrom(kubeconfig, contextName string) dynamic.Interface {
+	cfg, err := k8sConfig(kubeconfig, contextName)
+	fatalIf(err)
+	return loMust(dynamic.NewForConfig(cfg))
+}
+
+func mustClientset(kubeconfig, contextName string) *kubernetes.Clientset {
+	cfg, err := k8sConfig(kubeconfig, contextName)
+	fatalIf(err)
+	cs, err := kubernetes.NewForConfig(cfg)
+	fatalIf(err)
+	return cs
+}
+
+func restConfigFromKubeconfig(cfg *clientcmdapi.Config) (*rest.Config, error) {
+	return clientcmd.NewDefaultClientConfig(*cfg, &clientcmd.ConfigOverrides{}).ClientConfig()
+}
+
+func waitAPIReady(ctx context.Context, cfg *rest.Config, poll time.Duration) error {
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	attempt := 0
+	for {
+		_, err := cs.Discovery().ServerVersion()
+		if err == nil {
+			return nil
+		}
+		attempt++
+		if attempt%6 == 0 {
+			fmt.Fprintf(os.Stderr, "  still waiting for API (%s)\n", time.Since(start).Round(time.Second))
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for Kubernetes API after %s: %w",
+				time.Since(start).Round(time.Second), ctx.Err())
+		case <-time.After(poll):
+		}
+	}
 }
 
 func loMust[T any](v T, err error) T {
@@ -218,6 +281,35 @@ func applyObjects(opts k8sOptions, paths []string) {
 	}
 }
 
+func applyObjectsDyn(dyn dynamic.Interface, paths []string) {
+	ctx := context.Background()
+	for _, path := range paths {
+		objs, err := readUnstructured(path)
+		fatalIf(err)
+		for _, obj := range objs {
+			gvr := gvrForGVK(obj.GroupVersionKind())
+			if gvr.Resource == "" {
+				fatalf("unsupported kind %s", obj.GetKind())
+			}
+			var res dynamic.ResourceInterface
+			if ns := obj.GetNamespace(); ns != "" {
+				res = dyn.Resource(gvr).Namespace(ns)
+			} else {
+				res = dyn.Resource(gvr)
+			}
+			name := obj.GetName()
+			obj.SetResourceVersion("")
+			obj.SetManagedFields(nil)
+			_, err = res.Apply(ctx, name, obj, metav1.ApplyOptions{
+				FieldManager: "lambdactl",
+				Force:        true,
+			})
+			fatalIf(err)
+			fmt.Printf("applied %s/%s\n", obj.GetKind(), name)
+		}
+	}
+}
+
 func deleteByName(opts k8sOptions, kind string, name string) {
 	dyn := mustDynamic(opts)
 	ctx := context.Background()
@@ -253,6 +345,14 @@ func gvrForGVK(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 		return gvrForKind("NodePool")
 	case "NodeClaim":
 		return gvrForKind("NodeClaim")
+	case "Namespace":
+		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	case "Secret":
+		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	case "ServiceAccount":
+		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
+	case "ClusterRoleBinding":
+		return schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
 	default:
 		return schema.GroupVersionResource{}
 	}

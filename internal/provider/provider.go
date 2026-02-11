@@ -28,6 +28,7 @@ const (
 	tagNodePool      = "karpenter-sh-nodepool"
 	tagNodeClass     = "karpenter-lambda-cloud-lambdanodeclass"
 	tagCluster       = "karpenter-sh-cluster"
+	tagImageID       = "karpenter-lambda-cloud-image-id"
 )
 
 type LambdaAPI interface {
@@ -103,6 +104,18 @@ func (p *Provider) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (clou
 		}
 	}
 
+	// Check image drift: compare the image ID/family stored at launch time
+	// against the current nodeclass spec.
+	if class.Spec.Image != nil && nodeClaim.Status.ImageID != "" {
+		wantImageID := class.Spec.Image.ID
+		if wantImageID == "" {
+			wantImageID = class.Spec.Image.Family
+		}
+		if wantImageID != "" && nodeClaim.Status.ImageID != wantImageID {
+			return "ImageDrifted", nil
+		}
+	}
+
 	return "", nil
 }
 
@@ -118,7 +131,7 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 		return nil, serrors.Wrap(fmt.Errorf("sshKeyNames must include at least one entry"), "nodeclass", class.Name)
 	}
 
-	existing, err := p.findByNodeClaimTag(ctx, nc.Name)
+	existing, err := p.findByNodeClaimTag(ctx, nc.Name, isNonViableInstance)
 	if err != nil {
 		return nil, err
 	}
@@ -162,19 +175,27 @@ func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 	if err != nil {
 		return err
 	}
-	if inst == nil || isTerminalInstance(inst) {
-		return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("nodeclaim not found"))
+	if inst == nil {
+		return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("instance not found"))
 	}
-	if inst.Status == "terminating" {
+
+	switch inst.Status {
+	case "terminated", "preempted":
+		// Instance is truly gone.
+		return cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("instance %s is %s", inst.ID, inst.Status))
+	case "terminating":
+		// Termination in progress; tell Karpenter to check back later.
+		return nil
+	default:
+		// Active, booting, unhealthy, etc. — proceed with termination.
+		log.Info("terminating instance", "instanceID", inst.ID, "status", inst.Status)
+		if err := p.lambda.TerminateInstance(ctx, inst.ID); err != nil {
+			instanceDeleteTotal.WithLabelValues("error").Inc()
+			return err
+		}
+		instanceDeleteTotal.WithLabelValues("success").Inc()
 		return nil
 	}
-	log.Info("terminating instance", "instanceID", inst.ID)
-	if err := p.lambda.TerminateInstance(ctx, inst.ID); err != nil {
-		instanceDeleteTotal.WithLabelValues("error").Inc()
-		return err
-	}
-	instanceDeleteTotal.WithLabelValues("success").Inc()
-	return nil
 }
 
 func (p *Provider) Get(ctx context.Context, providerID string) (*v1.NodeClaim, error) {
@@ -182,12 +203,15 @@ func (p *Provider) Get(ctx context.Context, providerID string) (*v1.NodeClaim, e
 	if key == "" {
 		return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("invalid provider id"))
 	}
-	inst, err := p.lambda.GetInstance(ctx, key)
-	if err != nil {
+	inst, getErr := p.lambda.GetInstance(ctx, key)
+	if getErr != nil {
 		// Fallback to list in case providerID is hostname or name.
-		inst, err = p.findByInstanceKey(ctx, key)
-		if err != nil {
-			return nil, cloudprovider.NewNodeClaimNotFoundError(err)
+		var listErr error
+		inst, listErr = p.findByInstanceKey(ctx, key, isGoneInstance)
+		if listErr != nil {
+			// Both Get and List failed — likely a transient API issue.
+			// Return raw error so Karpenter retries instead of prematurely finalizing.
+			return nil, fmt.Errorf("get instance %q: %w; list fallback: %v", key, getErr, listErr)
 		}
 		if inst == nil {
 			return nil, cloudprovider.NewNodeClaimNotFoundError(fmt.Errorf("instance %q not found", key))
@@ -205,6 +229,9 @@ func (p *Provider) List(ctx context.Context) ([]*v1.NodeClaim, error) {
 
 	var out []*v1.NodeClaim
 	for _, inst := range instances {
+		if isNonViableInstance(&inst) {
+			continue
+		}
 		tags := tagsToMap(inst.Tags)
 		if tags[tagCluster] != p.clusterName {
 			continue
@@ -295,6 +322,15 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 
 	if class.Spec.Image != nil {
 		req.Image = &lambdaclient.ImageSpec{ID: class.Spec.Image.ID, Family: class.Spec.Image.Family}
+		// Tag with image identifier so nodeClaimFromInstance can set Status.ImageID,
+		// enabling Karpenter drift detection on image changes.
+		imageID := class.Spec.Image.ID
+		if imageID == "" {
+			imageID = class.Spec.Image.Family
+		}
+		if imageID != "" {
+			req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagImageID, Value: imageID})
+		}
 	}
 	if len(class.Spec.FirewallRulesetIDs) > 0 {
 		for _, id := range class.Spec.FirewallRulesetIDs {
@@ -310,13 +346,15 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 	return req, nil
 }
 
-func (p *Provider) findByNodeClaimTag(ctx context.Context, name string) (*lambdaclient.Instance, error) {
+// findByNodeClaimTag looks up an instance by its karpenter-sh-nodeclaim tag.
+// The skip function controls which instances to exclude from results.
+func (p *Provider) findByNodeClaimTag(ctx context.Context, name string, skip func(*lambdaclient.Instance) bool) (*lambdaclient.Instance, error) {
 	instances, err := p.listCache.List(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, inst := range instances {
-		if isTerminalInstance(&inst) {
+		if skip(&inst) {
 			continue
 		}
 		tags := tagsToMap(inst.Tags)
@@ -339,7 +377,7 @@ func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v
 				return inst, nil
 			}
 			// Fallback to list in case Get returns a transient error or providerID is hostname.
-			inst, err = p.findByInstanceKey(ctx, key)
+			inst, err = p.findByInstanceKey(ctx, key, isGoneInstance)
 			if err != nil {
 				return nil, err
 			}
@@ -348,16 +386,16 @@ func (p *Provider) resolveInstanceForNodeClaim(ctx context.Context, nodeClaim *v
 			}
 		}
 	}
-	return p.findByNodeClaimTag(ctx, nodeClaim.Name)
+	return p.findByNodeClaimTag(ctx, nodeClaim.Name, isGoneInstance)
 }
 
-func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdaclient.Instance, error) {
+func (p *Provider) findByInstanceKey(ctx context.Context, key string, skip func(*lambdaclient.Instance) bool) (*lambdaclient.Instance, error) {
 	instances, err := p.listCache.List(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, inst := range instances {
-		if isTerminalInstance(&inst) {
+		if skip(&inst) {
 			continue
 		}
 		if inst.ID == key || inst.Hostname == key || inst.Name == key {
@@ -367,7 +405,21 @@ func (p *Provider) findByInstanceKey(ctx context.Context, key string) (*lambdacl
 	return nil, nil
 }
 
-func isTerminalInstance(inst *lambdaclient.Instance) bool {
+// isGoneInstance returns true for instances that are irrecoverably gone and
+// will never serve as a node again.
+func isGoneInstance(inst *lambdaclient.Instance) bool {
+	switch inst.Status {
+	case "terminated", "preempted":
+		return true
+	default:
+		return false
+	}
+}
+
+// isNonViableInstance returns true for instances that should not be considered
+// when checking for existing viable instances (e.g., during Create idempotency).
+// Includes gone instances plus those that are in the process of dying.
+func isNonViableInstance(inst *lambdaclient.Instance) bool {
 	switch inst.Status {
 	case "terminated", "preempted", "unhealthy", "terminating":
 		return true
@@ -388,7 +440,7 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 			labels[k] = v
 		}
 	}
-	// Rehydrate core labels from instance tags when seed is nil.
+	// Rehydrate core labels from instance tags when seed is nil (List/Get path).
 	if seed == nil {
 		tags := tagsToMap(inst.Tags)
 		if np := tags[tagNodePool]; np != "" {
@@ -397,8 +449,9 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 		if ncName := tags[tagNodeClass]; ncName != "" {
 			labels[v1.NodeClassLabelKey(schema.GroupKind{Group: v1alpha1.Group, Kind: "LambdaNodeClass"})] = ncName
 		}
-		labels[v1.CapacityTypeLabelKey] = v1.CapacityTypeOnDemand
 	}
+	// Lambda only has on-demand capacity.
+	labels[v1.CapacityTypeLabelKey] = v1.CapacityTypeOnDemand
 	labels[corev1.LabelInstanceTypeStable] = inst.Type.Name
 	if inst.Region.Name != "" {
 		labels[corev1.LabelTopologyRegion] = inst.Region.Name
@@ -408,6 +461,20 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 
 	nc.Labels = labels
 	nc.Status.ProviderID = providerIDForInstance(inst)
+
+	// Populate capacity so Karpenter's scheduler knows this pending NodeClaim
+	// can accept pods. Without this, the scheduler sees zero available resources
+	// and creates duplicate NodeClaims for the same pod.
+	capacity := capacityFromSpecs(inst.Type.Name, inst.Type.Specs)
+	nc.Status.Capacity = capacity
+	nc.Status.Allocatable = capacity
+
+	// Set ImageID from the tag we applied at launch time. This enables
+	// Karpenter drift detection when the nodeclass image changes.
+	tags := tagsToMap(inst.Tags)
+	if imageID := tags[tagImageID]; imageID != "" {
+		nc.Status.ImageID = imageID
+	}
 
 	return &nc
 }
@@ -449,17 +516,7 @@ func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceT
 		})
 	}
 
-	capacity := corev1.ResourceList{}
-	capacity[corev1.ResourceCPU] = *resource.NewQuantity(int64(item.InstanceType.Specs.VCPUs), resource.DecimalSI)
-	capacity[corev1.ResourceMemory] = *resource.NewQuantity(int64(item.InstanceType.Specs.MemoryGiB)<<30, resource.BinarySI)
-	if item.InstanceType.Specs.StorageGiB > 0 {
-		capacity[corev1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(item.InstanceType.Specs.StorageGiB)<<30, resource.BinarySI)
-	}
-	if item.InstanceType.Specs.GPUs > 0 {
-		capacity[corev1.ResourceName("nvidia.com/gpu")] = *resource.NewQuantity(int64(item.InstanceType.Specs.GPUs), resource.DecimalSI)
-	}
-	// Set a conservative default max pods to satisfy scheduling requirements.
-	capacity[corev1.ResourcePods] = *resource.NewQuantity(110, resource.DecimalSI)
+	capacity := capacityFromSpecs(name, item.InstanceType.Specs)
 
 	return &cloudprovider.InstanceType{
 		Name:         name,
@@ -468,6 +525,24 @@ func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceT
 		Capacity:     capacity,
 		Overhead:     &cloudprovider.InstanceTypeOverhead{},
 	}
+}
+
+// capacityFromSpecs builds a ResourceList from instance type specs. Used both
+// for advertising instance type capacity and for populating NodeClaim status
+// so the scheduler can account for pending NodeClaims.
+func capacityFromSpecs(name string, specs lambdaclient.InstanceTypeSpec) corev1.ResourceList {
+	capacity := corev1.ResourceList{}
+	capacity[corev1.ResourceCPU] = *resource.NewQuantity(int64(specs.VCPUs), resource.DecimalSI)
+	capacity[corev1.ResourceMemory] = *resource.NewQuantity(int64(specs.MemoryGiB)<<30, resource.BinarySI)
+	if specs.StorageGiB > 0 {
+		capacity[corev1.ResourceEphemeralStorage] = *resource.NewQuantity(int64(specs.StorageGiB)<<30, resource.BinarySI)
+	}
+	if specs.GPUs > 0 {
+		capacity[corev1.ResourceName("nvidia.com/gpu")] = *resource.NewQuantity(int64(specs.GPUs), resource.DecimalSI)
+	}
+	// Conservative default max pods to satisfy scheduling requirements.
+	capacity[corev1.ResourcePods] = *resource.NewQuantity(110, resource.DecimalSI)
+	return capacity
 }
 
 func tagsToMap(tags []lambdaclient.TagEntry) map[string]string {

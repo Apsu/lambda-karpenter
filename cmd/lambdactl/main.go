@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
 	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
+	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 )
 
@@ -229,7 +231,7 @@ type LaunchConfig struct {
 func launchInstance(args []string) {
 	fs := flag.NewFlagSet("launch", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to YAML config")
-	confirm := fs.Bool("confirm", false, "Confirm launch")
+	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
 	name := fs.String("name", "", "Instance name")
 	hostname := fs.String("hostname", "", "Hostname")
 	region := fs.String("region", "", "Region name")
@@ -247,10 +249,6 @@ func launchInstance(args []string) {
 	base, token := addCommonFlags(fs)
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
-
-	if !*confirm {
-		fatalf("launch requires --confirm")
-	}
 
 	cfg := LaunchConfig{
 		Tags: map[string]string{},
@@ -308,6 +306,14 @@ func launchInstance(args []string) {
 		cfg.Hostname = cfg.Name
 	}
 
+	if !*confirm {
+		label := cfg.InstanceType + " in " + cfg.Region
+		if cfg.Name != "" {
+			label = cfg.Name + " (" + label + ")"
+		}
+		confirmAction("launch " + label)
+	}
+
 	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
@@ -342,17 +348,31 @@ func launchInstance(args []string) {
 func terminateInstances(args []string) {
 	fs := flag.NewFlagSet("terminate", flag.ExitOnError)
 	id := fs.String("id", "", "Instance ID")
-	confirm := fs.Bool("confirm", false, "Confirm termination")
+	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
+	base, token := addCommonFlags(fs)
+	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
 
-	if !*confirm {
-		fatalf("terminate requires --confirm")
-	}
 	if *id == "" {
 		fatalf("--id is required")
 	}
 
-	fatalf("terminate is disabled by design in this build (requested safety guard)")
+	resolveToken(token, tokenFile)
+	client := mustClientWith(*base, *token)
+	ctx := context.Background()
+
+	// Fetch instance details for the confirmation prompt.
+	inst, err := client.GetInstance(ctx, *id)
+	fatalIf(err)
+
+	if !*confirm {
+		summary := fmt.Sprintf("terminate %s (%s, %s, %s, ip=%s)",
+			inst.ID, inst.Name, inst.Type.Name, inst.Region.Name, inst.IP)
+		confirmAction(summary)
+	}
+
+	fatalIf(client.TerminateInstance(ctx, *id))
+	fmt.Printf("terminated %s\n", *id)
 }
 
 func mustClient(args []string) *lambdaclient.Client {
@@ -404,6 +424,22 @@ func getenvOr(key, def string) string {
 func applyStringOverride(dst *string, val string) {
 	if val != "" {
 		*dst = val
+	}
+}
+
+func confirmAction(action string) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		fatalf("%s: refusing without --confirm (stdin is not a terminal)", action)
+	}
+	fmt.Fprintf(os.Stderr, "%s — proceed? [y/N] ", action)
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		fatalf("aborted")
+	}
+	resp := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	if resp != "y" && resp != "yes" {
+		fatalf("aborted")
 	}
 }
 

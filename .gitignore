@@ -9,6 +9,10 @@ lambdactl
 /tmp
 *.generated.yaml
 rke2.yaml
+*.kubeconfig
+
+# User configs (copy from examples/ and customize)
+configs/
 
 # IDE / tooling
 .claude/
