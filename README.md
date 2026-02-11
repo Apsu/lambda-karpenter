@@ -217,9 +217,10 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   -f examples/gpu-operator-values.yaml
 ```
 
-The example NodePool applies an `nvidia.com/gpu:NoSchedule` taint. The GPU Operator
-tolerates this by default. GPU workload pods must include a matching toleration
-(see `examples/gpu-test-pod.yaml`).
+Since all Lambda Cloud instances are GPUs, the example NodePools do not apply a
+GPU taint — the `nvidia.com/gpu` resource request is sufficient to gate GPU
+workload scheduling. This avoids threading tolerations through every system
+component (coredns, ingress, metrics-server, etc.).
 
 ## Notes
 

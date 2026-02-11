@@ -74,16 +74,19 @@ silent misconfiguration while preserving the schema for forward compatibility.
 
 ## GPU Operator Integration
 
-### Taint strategy
+### No GPU taint
 
-GPU NodePools use a permanent `nvidia.com/gpu:NoSchedule` taint. The NVIDIA
-GPU Operator tolerates this taint by default. GPU workloads must explicitly
-tolerate it, which prevents non-GPU pods from landing on expensive GPU nodes.
+Since all Lambda Cloud instances are GPUs, NodePools do not apply an
+`nvidia.com/gpu:NoSchedule` taint. The GPU resource request is sufficient to
+gate scheduling. Omitting the taint avoids threading tolerations through every
+system component (coredns, ingress-nginx, metrics-server, the GPU Operator
+Deployment itself, etc.). In a mixed GPU/CPU fleet the taint would make sense,
+but Lambda's public cloud is GPU-only.
 
 ### Karpenter startup toleration
 
 The GPU Operator's DaemonSets and NFD worker need a
-`karpenter.sh/unregistered:NoExecute` toleration so they can schedule on nodes
+`karpenter.sh/unregistered:NoSchedule` toleration so they can schedule on nodes
 that haven't finished registering yet.
 
 ### Consolidation

@@ -24,10 +24,7 @@ resources: {}
 
 nodeSelector: {}
 
-tolerations:
-  - key: "nvidia.com/gpu"
-    operator: "Exists"
-    effect: "NoSchedule"
+tolerations: []
 
 affinity: {}
 

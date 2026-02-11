@@ -13,10 +13,6 @@ spec:
         app: gpu-sleep
     spec:
       restartPolicy: Always
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: gpu-sleep
           image: ubuntu:22.04
