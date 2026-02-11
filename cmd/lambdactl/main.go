@@ -3,13 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
 	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
 	"github.com/joho/godotenv"
@@ -17,96 +17,85 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const defaultBaseURL = "https://cloud.lambda.ai"
+// CLI is the top-level command tree.
+type CLI struct {
+	ListInstances     ListInstancesCmd     `cmd:"" name:"list-instances" help:"List Lambda instances."`
+	GetInstance        GetInstanceCmd       `cmd:"" name:"get-instance" help:"Get instance details."`
+	ListInstanceTypes  ListInstanceTypesCmd `cmd:"" name:"list-instance-types" help:"List available instance types."`
+	ListImages         ListImagesCmd        `cmd:"" name:"list-images" help:"List available images."`
+	GetImage           GetImageCmd          `cmd:"" name:"get-image" help:"Get image details."`
+	Launch             LaunchCmd            `cmd:"" help:"Launch a new instance."`
+	Terminate          TerminateCmd         `cmd:"" help:"Terminate an instance."`
+	K8s                K8sCmd               `cmd:"" name:"k8s" help:"Kubernetes cluster management."`
+}
 
-func main() {
-	// Load .env (project defaults) then .env.local (personal overrides).
-	// Existing env vars are never overwritten. Missing files are silently skipped.
-	_ = godotenv.Load(".env", ".env.local")
+// APIFlags are shared flags for Lambda API commands.
+type APIFlags struct {
+	BaseURL   string `name:"base-url" env:"LAMBDA_API_BASE_URL" default:"https://cloud.lambda.ai" help:"Lambda API base URL."`
+	Token     string `name:"token" env:"LAMBDA_API_TOKEN" help:"Lambda API token."`
+	TokenFile string `name:"token-file" help:"Path to token file."`
+}
 
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+func (f *APIFlags) resolveToken() {
+	if f.Token == "" && f.TokenFile == "" {
+		if _, err := os.Stat("lambda-api.key"); err == nil {
+			f.TokenFile = "lambda-api.key"
+		}
 	}
-
-	cmd := os.Args[1]
-	switch cmd {
-	case "list-instances":
-		listInstances(os.Args[2:])
-	case "get-instance":
-		getInstance(os.Args[2:])
-	case "list-instance-types":
-		listInstanceTypes(os.Args[2:])
-	case "list-images":
-		listImages(os.Args[2:])
-	case "launch":
-		launchInstance(os.Args[2:])
-	case "terminate":
-		terminateInstances(os.Args[2:])
-	case "get-image":
-		getImage(os.Args[2:])
-	case "k8s":
-		handleK8s(os.Args[2:])
-	default:
-		usage()
-		os.Exit(2)
+	if f.Token == "" && f.TokenFile != "" {
+		data, err := os.ReadFile(f.TokenFile)
+		fatalIf(err)
+		f.Token = strings.TrimSpace(string(data))
 	}
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: lambdactl <command> [flags]")
-	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  list-instances [--limit N]")
-	fmt.Fprintln(os.Stderr, "  get-instance --id <instance-id>")
-	fmt.Fprintln(os.Stderr, "  list-instance-types")
-	fmt.Fprintln(os.Stderr, "  list-images")
-	fmt.Fprintln(os.Stderr, "  get-image --id <image-id> [--region us-east-3]")
-	fmt.Fprintln(os.Stderr, "  launch [--config file.yaml] [--confirm] [flags]")
-	fmt.Fprintln(os.Stderr, "  terminate --id <instance-id> [--confirm]")
-	fmt.Fprintln(os.Stderr, "  k8s <command> [flags]")
+func (f *APIFlags) mustClient() *lambdaclient.Client {
+	f.resolveToken()
+	return mustClientWith(f.BaseURL, f.Token)
 }
 
-func listInstances(args []string) {
-	fs := flag.NewFlagSet("list-instances", flag.ExitOnError)
-	limit := fs.Int("limit", 0, "Limit output to N instances (0 = all)")
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
+// --- API commands ---
 
-	resolveToken(token, tokenFile)
+type ListInstancesCmd struct {
+	APIFlags
+	Limit int `name:"limit" default:"0" help:"Limit output to N instances (0 = all)."`
+}
 
-	client := mustClientWith(*base, *token)
+func (c *ListInstancesCmd) Run() error {
+	client := c.mustClient()
 	ctx := context.Background()
 	items, err := client.ListInstances(ctx)
 	fatalIf(err)
-	if *limit > 0 && *limit < len(items) {
-		items = items[:*limit]
+	if c.Limit > 0 && c.Limit < len(items) {
+		items = items[:c.Limit]
 	}
 	for _, inst := range items {
 		fmt.Printf("%s\t%s\t%s\t%s\n", inst.ID, inst.Status, inst.Type.Name, inst.Region.Name)
 	}
+	return nil
 }
 
-func getInstance(args []string) {
-	fs := flag.NewFlagSet("get-instance", flag.ExitOnError)
-	id := fs.String("id", "", "instance id")
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
-	if *id == "" {
-		fatalf("--id is required")
-	}
-	resolveToken(token, tokenFile)
+type GetInstanceCmd struct {
+	APIFlags
+	ID string `name:"id" required:"" help:"Instance ID."`
+}
 
-	client := mustClientWith(*base, *token)
+func (c *GetInstanceCmd) Run() error {
+	client := c.mustClient()
 	ctx := context.Background()
-	inst, err := client.GetInstance(ctx, *id)
+	inst, err := client.GetInstance(ctx, c.ID)
 	fatalIf(err)
-	fmt.Printf("id=%s status=%s type=%s region=%s ip=%s private_ip=%s\n", inst.ID, inst.Status, inst.Type.Name, inst.Region.Name, inst.IP, inst.PrivateIP)
+	fmt.Printf("id=%s status=%s type=%s region=%s ip=%s private_ip=%s\n",
+		inst.ID, inst.Status, inst.Type.Name, inst.Region.Name, inst.IP, inst.PrivateIP)
+	return nil
 }
 
-func listInstanceTypes(args []string) {
-	client := mustClient(args)
+type ListInstanceTypesCmd struct {
+	APIFlags
+}
+
+func (c *ListInstanceTypesCmd) Run() error {
+	client := c.mustClient()
 	ctx := context.Background()
 	items, err := client.ListInstanceTypes(ctx)
 	fatalIf(err)
@@ -138,62 +127,65 @@ func listInstanceTypes(args []string) {
 			regions,
 		)
 	}
+	return nil
 }
 
-func listImages(args []string) {
-	client := mustClient(args)
+type ListImagesCmd struct {
+	APIFlags
+}
+
+func (c *ListImagesCmd) Run() error {
+	client := c.mustClient()
 	ctx := context.Background()
 	items, err := client.ListImages(ctx)
 	fatalIf(err)
 	for _, img := range items {
 		fmt.Printf("%s\t%s\t%s\t%s\t%s\n", img.ID, img.Family, img.Name, img.Region.Name, img.Arch)
 	}
+	return nil
 }
 
-func getImage(args []string) {
-	fs := flag.NewFlagSet("get-image", flag.ExitOnError)
-	id := fs.String("id", "", "Image ID")
-	region := fs.String("region", "", "Region name (optional)")
-	family := fs.String("family", "", "Image family (optional)")
-	name := fs.String("name", "", "Image name (optional)")
-	arch := fs.String("arch", "", "Architecture filter (optional)")
-	latest := fs.Bool("latest", false, "Return only the latest matching image")
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
+type GetImageCmd struct {
+	APIFlags
+	ID     string `name:"id" help:"Image ID."`
+	Region string `name:"region" help:"Region name."`
+	Family string `name:"family" help:"Image family."`
+	Name   string `name:"name" help:"Image name."`
+	Arch   string `name:"arch" help:"Architecture filter."`
+	Latest bool   `name:"latest" help:"Return only the latest matching image."`
+}
 
-	if *id == "" && *family == "" && *name == "" {
+func (c *GetImageCmd) Run() error {
+	if c.ID == "" && c.Family == "" && c.Name == "" {
 		fatalf("one of --id, --family, or --name is required")
 	}
 
-	resolveToken(token, tokenFile)
-
-	client := mustClientWith(*base, *token)
+	client := c.mustClient()
 	ctx := context.Background()
 	items, err := client.ListImages(ctx)
 	fatalIf(err)
 
 	var matches []lambdaclient.Image
 	for _, img := range items {
-		if *id != "" && img.ID != *id {
+		if c.ID != "" && img.ID != c.ID {
 			continue
 		}
-		if *family != "" && img.Family != *family {
+		if c.Family != "" && img.Family != c.Family {
 			continue
 		}
-		if *name != "" && img.Name != *name {
+		if c.Name != "" && img.Name != c.Name {
 			continue
 		}
-		if *region != "" && img.Region.Name != *region {
+		if c.Region != "" && img.Region.Name != c.Region {
 			continue
 		}
-		if *arch != "" && img.Arch != *arch {
+		if c.Arch != "" && img.Arch != c.Arch {
 			continue
 		}
 		matches = append(matches, img)
 	}
 
-	if *latest && len(matches) > 0 {
+	if c.Latest && len(matches) > 0 {
 		latestImg := matches[0]
 		for _, img := range matches[1:] {
 			if img.UpdatedTime.After(latestImg.UpdatedTime) {
@@ -204,21 +196,14 @@ func getImage(args []string) {
 	}
 
 	for _, img := range matches {
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n", img.ID, img.Family, img.Name, img.Region.Name, img.Arch, img.UpdatedTime.Format(time.RFC3339))
+		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\n",
+			img.ID, img.Family, img.Name, img.Region.Name, img.Arch,
+			img.UpdatedTime.Format(time.RFC3339))
 	}
-}
-
-type stringSlice []string
-
-func (s *stringSlice) String() string {
-	return strings.Join(*s, ",")
-}
-
-func (s *stringSlice) Set(val string) error {
-	*s = append(*s, val)
 	return nil
 }
 
+// LaunchConfig is the YAML config file format for launch.
 type LaunchConfig struct {
 	Name            string            `json:"name" yaml:"name"`
 	Hostname        string            `json:"hostname" yaml:"hostname"`
@@ -233,33 +218,29 @@ type LaunchConfig struct {
 	Tags            map[string]string `json:"tags" yaml:"tags"`
 }
 
-func launchInstance(args []string) {
-	fs := flag.NewFlagSet("launch", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to YAML config")
-	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
-	name := fs.String("name", "", "Instance name")
-	hostname := fs.String("hostname", "", "Hostname")
-	region := fs.String("region", "", "Region name")
-	instanceType := fs.String("instance-type", "", "Instance type name")
-	userData := fs.String("user-data", "", "cloud-init user-data content")
-	userDataFile := fs.String("user-data-file", "", "Path to cloud-init user-data")
-	imageID := fs.String("image-id", "", "Image ID")
-	imageFamily := fs.String("image-family", "", "Image family")
-	var sshKeys stringSlice
-	fs.Var(&sshKeys, "ssh-key", "SSH key name (repeatable)")
-	var firewallIDs stringSlice
-	fs.Var(&firewallIDs, "firewall-id", "Firewall ruleset ID (repeatable)")
-	var tags stringSlice
-	fs.Var(&tags, "tag", "Tag in key=value form (repeatable)")
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
+type LaunchCmd struct {
+	APIFlags
+	Config       string   `name:"config" help:"Path to YAML config."`
+	Confirm      bool     `name:"confirm" help:"Skip interactive confirmation."`
+	Name         string   `name:"name" help:"Instance name."`
+	Hostname     string   `name:"hostname" help:"Hostname."`
+	Region       string   `name:"region" help:"Region name."`
+	InstanceType string   `name:"instance-type" help:"Instance type name."`
+	UserData     string   `name:"user-data" help:"cloud-init user-data content."`
+	UserDataFile string   `name:"user-data-file" help:"Path to cloud-init user-data."`
+	ImageID      string   `name:"image-id" help:"Image ID."`
+	ImageFamily  string   `name:"image-family" help:"Image family."`
+	SSHKeys      []string `name:"ssh-key" help:"SSH key name (repeatable)."`
+	FirewallIDs  []string `name:"firewall-id" help:"Firewall ruleset ID (repeatable)."`
+	Tags         []string `name:"tag" help:"Tag in key=value form (repeatable)."`
+}
 
+func (c *LaunchCmd) Run() error {
 	cfg := LaunchConfig{
 		Tags: map[string]string{},
 	}
-	if *configPath != "" {
-		data, err := os.ReadFile(*configPath)
+	if c.Config != "" {
+		data, err := os.ReadFile(c.Config)
 		fatalIf(err)
 		fatalIf(yaml.Unmarshal(data, &cfg))
 		if cfg.Tags == nil {
@@ -267,21 +248,21 @@ func launchInstance(args []string) {
 		}
 	}
 
-	applyStringOverride(&cfg.Name, *name)
-	applyStringOverride(&cfg.Hostname, *hostname)
-	applyStringOverride(&cfg.Region, *region)
-	applyStringOverride(&cfg.InstanceType, *instanceType)
-	applyStringOverride(&cfg.UserData, *userData)
-	applyStringOverride(&cfg.UserDataFile, *userDataFile)
-	applyStringOverride(&cfg.ImageID, *imageID)
-	applyStringOverride(&cfg.ImageFamily, *imageFamily)
-	if len(sshKeys) > 0 {
-		cfg.SSHKeyNames = append([]string(nil), sshKeys...)
+	applyStringOverride(&cfg.Name, c.Name)
+	applyStringOverride(&cfg.Hostname, c.Hostname)
+	applyStringOverride(&cfg.Region, c.Region)
+	applyStringOverride(&cfg.InstanceType, c.InstanceType)
+	applyStringOverride(&cfg.UserData, c.UserData)
+	applyStringOverride(&cfg.UserDataFile, c.UserDataFile)
+	applyStringOverride(&cfg.ImageID, c.ImageID)
+	applyStringOverride(&cfg.ImageFamily, c.ImageFamily)
+	if len(c.SSHKeys) > 0 {
+		cfg.SSHKeyNames = append([]string(nil), c.SSHKeys...)
 	}
-	if len(firewallIDs) > 0 {
-		cfg.FirewallRuleIDs = append([]string(nil), firewallIDs...)
+	if len(c.FirewallIDs) > 0 {
+		cfg.FirewallRuleIDs = append([]string(nil), c.FirewallIDs...)
 	}
-	for _, kv := range tags {
+	for _, kv := range c.Tags {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
 			fatalf("invalid tag %q, expected key=value", kv)
@@ -311,7 +292,7 @@ func launchInstance(args []string) {
 		cfg.Hostname = cfg.Name
 	}
 
-	if !*confirm {
+	if !c.Confirm {
 		label := cfg.InstanceType + " in " + cfg.Region
 		if cfg.Name != "" {
 			label = cfg.Name + " (" + label + ")"
@@ -319,9 +300,7 @@ func launchInstance(args []string) {
 		confirmAction("launch " + label)
 	}
 
-	resolveToken(token, tokenFile)
-
-	client := mustClientWith(*base, *token)
+	client := c.mustClient()
 	req := lambdaclient.LaunchRequest{
 		Name:             cfg.Name,
 		Hostname:         cfg.Hostname,
@@ -348,51 +327,47 @@ func launchInstance(args []string) {
 	for _, id := range ids {
 		fmt.Println(id)
 	}
+	return nil
 }
 
-func terminateInstances(args []string) {
-	fs := flag.NewFlagSet("terminate", flag.ExitOnError)
-	id := fs.String("id", "", "Instance ID")
-	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
+type TerminateCmd struct {
+	APIFlags
+	ID      string `name:"id" required:"" help:"Instance ID."`
+	Confirm bool   `name:"confirm" help:"Skip interactive confirmation."`
+}
 
-	if *id == "" {
-		fatalf("--id is required")
-	}
-
-	resolveToken(token, tokenFile)
-	client := mustClientWith(*base, *token)
+func (c *TerminateCmd) Run() error {
+	client := c.mustClient()
 	ctx := context.Background()
 
-	// Fetch instance details for the confirmation prompt.
-	inst, err := client.GetInstance(ctx, *id)
+	inst, err := client.GetInstance(ctx, c.ID)
 	fatalIf(err)
 
-	if !*confirm {
+	if !c.Confirm {
 		summary := fmt.Sprintf("terminate %s (%s, %s, %s, ip=%s)",
 			inst.ID, inst.Name, inst.Type.Name, inst.Region.Name, inst.IP)
 		confirmAction(summary)
 	}
 
-	fatalIf(client.TerminateInstance(ctx, *id))
-	fmt.Printf("terminated %s\n", *id)
+	fatalIf(client.TerminateInstance(ctx, c.ID))
+	fmt.Printf("terminated %s\n", c.ID)
+	return nil
 }
 
-func mustClient(args []string) *lambdaclient.Client {
-	fs := flag.NewFlagSet("common", flag.ExitOnError)
-	base, token := addCommonFlags(fs)
-	tokenFile := fs.String("token-file", "", "Path to token file")
-	_ = fs.Parse(args)
-	resolveToken(token, tokenFile)
-	return mustClientWith(*base, *token)
-}
+// --- Helpers ---
 
-func addCommonFlags(fs *flag.FlagSet) (*string, *string) {
-	base := fs.String("base-url", getenvOr("LAMBDA_API_BASE_URL", defaultBaseURL), "Lambda API base URL")
-	token := fs.String("token", getenvOr("LAMBDA_API_TOKEN", ""), "Lambda API token")
-	return base, token
+func main() {
+	// Load .env (project defaults) then .env.local (personal overrides).
+	// Existing env vars are never overwritten. Missing files are silently skipped.
+	_ = godotenv.Load(".env", ".env.local")
+
+	var cli CLI
+	ctx := kong.Parse(&cli,
+		kong.Name("lambdactl"),
+		kong.Description("Lambda Cloud CLI for instance and cluster management."),
+		kong.UsageOnError(),
+	)
+	fatalIf(ctx.Run())
 }
 
 func mustClientWith(baseURL, token string) *lambdaclient.Client {
@@ -403,27 +378,6 @@ func mustClientWith(baseURL, token string) *lambdaclient.Client {
 	client, err := lambdaclient.New(baseURL, token, limiter)
 	fatalIf(err)
 	return client
-}
-
-func resolveToken(token *string, tokenFile *string) {
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-api.key"); err == nil {
-			*tokenFile = "lambda-api.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
-}
-
-func getenvOr(key, def string) string {
-	val := os.Getenv(key)
-	if val == "" {
-		return def
-	}
-	return val
 }
 
 func applyStringOverride(dst *string, val string) {
@@ -459,3 +413,4 @@ func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }
+

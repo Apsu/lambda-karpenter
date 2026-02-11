@@ -8,14 +8,12 @@ import (
 	"os"
 	"time"
 
-	"flag"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -24,128 +22,106 @@ import (
 	"k8s.io/client-go/util/homedir"
 )
 
-type k8sOptions struct {
-	kubeconfig string
-	context    string
-	namespace  string
+// K8sCmd is the parent for all kubernetes subcommands.
+type K8sCmd struct {
+	Bootstrap  BootstrapCmd  `cmd:"" help:"Launch controller, wait for RKE2, extract kubeconfig."`
+	Kubeconfig KubeconfigCmd `cmd:"" help:"Extract kubeconfig from existing remote RKE2 node."`
+	User       UserCmd       `cmd:"" help:"Manage per-user SA + token kubeconfigs."`
+	Deploy     DeployCmd     `cmd:"" help:"Install GPU operator + lambda-karpenter + apply resources."`
+	Apply      ApplyCmd      `cmd:"" help:"Server-side apply resources."`
+	Delete     DeleteCmd     `cmd:"" help:"Delete resources."`
+	Status     StatusCmd     `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
+	Nodeclaims NodeclaimsCmd `cmd:"" help:"List NodeClaim details."`
+	Wait       WaitCmd       `cmd:"" help:"Wait for NodeClaim to be ready."`
 }
 
-func handleK8s(args []string) {
-	if len(args) < 1 {
-		k8sUsage()
-		os.Exit(2)
+// K8sFlags are shared flags for k8s resource commands.
+type K8sFlags struct {
+	Kubeconfig string `name:"kubeconfig" env:"KUBECONFIG" help:"Path to kubeconfig."`
+	Context    string `name:"context" help:"Kubeconfig context."`
+	Namespace  string `name:"namespace" default:"karpenter" help:"Namespace."`
+}
+
+// --- Resource commands ---
+
+type ApplyCmd struct {
+	K8sFlags
+	NodeClass string `name:"nodeclass" help:"Path to LambdaNodeClass YAML."`
+	NodePool  string `name:"nodepool" help:"Path to NodePool YAML."`
+	Pod       string `name:"pod" help:"Path to Pod YAML."`
+}
+
+func (c *ApplyCmd) Run() error {
+	var paths []string
+	if c.NodeClass != "" {
+		paths = append(paths, c.NodeClass)
 	}
-	sub := args[0]
-	rest := args[1:]
-
-	// New lifecycle commands — handled in their own files.
-	switch sub {
-	case "bootstrap":
-		cmdBootstrap(rest)
-		return
-	case "kubeconfig":
-		cmdKubeconfig(rest)
-		return
-	case "user":
-		handleUser(rest)
-		return
-	case "deploy":
-		cmdDeploy(rest)
-		return
+	if c.NodePool != "" {
+		paths = append(paths, c.NodePool)
 	}
-
-	// Legacy k8s resource commands use shared k8sOptions.
-	switch sub {
-	case "apply":
-		fs := flag.NewFlagSet("k8s apply", flag.ExitOnError)
-		opts := bindK8sFlags(fs)
-		nodeClass := fs.String("nodeclass", "", "Path to LambdaNodeClass YAML")
-		nodePool := fs.String("nodepool", "", "Path to NodePool YAML")
-		pod := fs.String("pod", "", "Path to Pod YAML (optional)")
-		_ = fs.Parse(rest)
-		var paths []string
-		if *nodeClass != "" {
-			paths = append(paths, *nodeClass)
-		}
-		if *nodePool != "" {
-			paths = append(paths, *nodePool)
-		}
-		if *pod != "" {
-			paths = append(paths, *pod)
-		}
-		if len(paths) == 0 {
-			fatalf("at least one of --nodeclass, --nodepool, or --pod is required")
-		}
-		applyObjects(opts, paths)
-	case "delete":
-		fs := flag.NewFlagSet("k8s delete", flag.ExitOnError)
-		opts := bindK8sFlags(fs)
-		nodeClass := fs.String("nodeclass", "", "LambdaNodeClass name")
-		nodePool := fs.String("nodepool", "", "NodePool name")
-		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
-		_ = fs.Parse(rest)
-		if *nodeClass == "" && *nodePool == "" && *nodeClaim == "" {
-			fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
-		}
-		if *nodeClaim != "" {
-			deleteByName(opts, "NodeClaim", *nodeClaim)
-		}
-		if *nodePool != "" {
-			deleteByName(opts, "NodePool", *nodePool)
-		}
-		if *nodeClass != "" {
-			deleteByName(opts, "LambdaNodeClass", *nodeClass)
-		}
-	case "status":
-		fs := flag.NewFlagSet("k8s status", flag.ExitOnError)
-		opts := bindK8sFlags(fs)
-		_ = fs.Parse(rest)
-		listStatus(opts)
-	case "nodeclaims":
-		fs := flag.NewFlagSet("k8s nodeclaims", flag.ExitOnError)
-		opts := bindK8sFlags(fs)
-		_ = fs.Parse(rest)
-		listNodeClaims(opts)
-	case "wait":
-		fs := flag.NewFlagSet("k8s wait", flag.ExitOnError)
-		opts := bindK8sFlags(fs)
-		nodeClaim := fs.String("nodeclaim", "", "NodeClaim name")
-		timeout := fs.Duration("timeout", 10*time.Minute, "Timeout")
-		_ = fs.Parse(rest)
-		if *nodeClaim == "" {
-			fatalf("--nodeclaim is required")
-		}
-		waitNodeClaimReady(opts, *nodeClaim, *timeout)
-	default:
-		k8sUsage()
-		os.Exit(2)
+	if c.Pod != "" {
+		paths = append(paths, c.Pod)
 	}
+	if len(paths) == 0 {
+		fatalf("at least one of --nodeclass, --nodepool, or --pod is required")
+	}
+	applyObjects(c.K8sFlags, paths)
+	return nil
 }
 
-func bindK8sFlags(fs *flag.FlagSet) k8sOptions {
-	opts := k8sOptions{}
-	fs.StringVar(&opts.kubeconfig, "kubeconfig", os.Getenv("KUBECONFIG"), "Path to kubeconfig")
-	fs.StringVar(&opts.context, "context", "", "Kubeconfig context")
-	fs.StringVar(&opts.namespace, "namespace", "karpenter", "Namespace (default karpenter)")
-	return opts
+type DeleteCmd struct {
+	K8sFlags
+	NodeClass string `name:"nodeclass" help:"LambdaNodeClass name."`
+	NodePool  string `name:"nodepool" help:"NodePool name."`
+	NodeClaim string `name:"nodeclaim" help:"NodeClaim name."`
 }
 
-func k8sUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: lambdactl k8s <command> [flags]")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Cluster lifecycle:")
-	fmt.Fprintln(os.Stderr, "  bootstrap      Launch controller, wait for RKE2, extract kubeconfig")
-	fmt.Fprintln(os.Stderr, "  kubeconfig     Extract kubeconfig from existing remote RKE2 node")
-	fmt.Fprintln(os.Stderr, "  user           Manage per-user SA + token kubeconfigs (create/rotate/cleanup)")
-	fmt.Fprintln(os.Stderr, "  deploy         Install GPU operator + lambda-karpenter + apply resources")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Resource management:")
-	fmt.Fprintln(os.Stderr, "  apply          Server-side apply resources (--nodeclass, --nodepool, --pod)")
-	fmt.Fprintln(os.Stderr, "  delete         Delete resources (--nodeclass, --nodepool, --nodeclaim)")
-	fmt.Fprintln(os.Stderr, "  status         Show LambdaNodeClass, NodePool, NodeClaim status")
-	fmt.Fprintln(os.Stderr, "  nodeclaims     List NodeClaim details")
-	fmt.Fprintln(os.Stderr, "  wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)")
+func (c *DeleteCmd) Run() error {
+	if c.NodeClass == "" && c.NodePool == "" && c.NodeClaim == "" {
+		fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
+	}
+	if c.NodeClaim != "" {
+		deleteByName(c.K8sFlags, "NodeClaim", c.NodeClaim)
+	}
+	if c.NodePool != "" {
+		deleteByName(c.K8sFlags, "NodePool", c.NodePool)
+	}
+	if c.NodeClass != "" {
+		deleteByName(c.K8sFlags, "LambdaNodeClass", c.NodeClass)
+	}
+	return nil
 }
+
+type StatusCmd struct {
+	K8sFlags
+}
+
+func (c *StatusCmd) Run() error {
+	listStatus(c.K8sFlags)
+	return nil
+}
+
+type NodeclaimsCmd struct {
+	K8sFlags
+}
+
+func (c *NodeclaimsCmd) Run() error {
+	listNodeClaims(c.K8sFlags)
+	return nil
+}
+
+type WaitCmd struct {
+	K8sFlags
+	NodeClaim string        `name:"nodeclaim" required:"" help:"NodeClaim name."`
+	Timeout   time.Duration `name:"timeout" default:"10m" help:"Timeout."`
+}
+
+func (c *WaitCmd) Run() error {
+	waitNodeClaimReady(c.K8sFlags, c.NodeClaim, c.Timeout)
+	return nil
+}
+
+// --- K8s helpers ---
 
 func k8sConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	if kubeconfig == "" {
@@ -162,8 +138,8 @@ func k8sConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	return cfg.ClientConfig()
 }
 
-func mustDynamic(opts k8sOptions) dynamic.Interface {
-	cfg, err := k8sConfig(opts.kubeconfig, opts.context)
+func mustDynamic(flags K8sFlags) dynamic.Interface {
+	cfg, err := k8sConfig(flags.Kubeconfig, flags.Context)
 	fatalIf(err)
 	return loMust(dynamic.NewForConfig(cfg))
 }
@@ -248,8 +224,8 @@ func readUnstructured(path string) ([]*unstructured.Unstructured, error) {
 	return objs, nil
 }
 
-func applyObjects(opts k8sOptions, paths []string) {
-	dyn := mustDynamic(opts)
+func applyObjects(flags K8sFlags, paths []string) {
+	dyn := mustDynamic(flags)
 	ctx := context.Background()
 
 	for _, path := range paths {
@@ -310,8 +286,8 @@ func applyObjectsDyn(dyn dynamic.Interface, paths []string) {
 	}
 }
 
-func deleteByName(opts k8sOptions, kind string, name string) {
-	dyn := mustDynamic(opts)
+func deleteByName(flags K8sFlags, kind string, name string) {
+	dyn := mustDynamic(flags)
 	ctx := context.Background()
 	gvr := gvrForKind(kind)
 	if gvr.Resource == "" {
@@ -358,8 +334,8 @@ func gvrForGVK(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 	}
 }
 
-func listStatus(opts k8sOptions) {
-	dyn := mustDynamic(opts)
+func listStatus(flags K8sFlags) {
+	dyn := mustDynamic(flags)
 	ctx := context.Background()
 
 	nodeClasses := listByKind(ctx, dyn, "LambdaNodeClass")
@@ -410,8 +386,8 @@ func listStatus(opts k8sOptions) {
 	}
 }
 
-func listNodeClaims(opts k8sOptions) {
-	dyn := mustDynamic(opts)
+func listNodeClaims(flags K8sFlags) {
+	dyn := mustDynamic(flags)
 	ctx := context.Background()
 	items := listByKind(ctx, dyn, "NodeClaim")
 	if len(items) == 0 {
@@ -430,8 +406,8 @@ func listNodeClaims(opts k8sOptions) {
 	}
 }
 
-func waitNodeClaimReady(opts k8sOptions, name string, timeout time.Duration) {
-	dyn := mustDynamic(opts)
+func waitNodeClaimReady(flags K8sFlags, name string, timeout time.Duration) {
+	dyn := mustDynamic(flags)
 	ctx := context.Background()
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
 		item, err := dyn.Resource(gvrForKind("NodeClaim")).Get(ctx, name, metav1.GetOptions{})

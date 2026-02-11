@@ -15,9 +15,10 @@ tasks:
       - task: vet
 
   build-go:
-    desc: Compile all Go packages
+    desc: Compile binaries to ./bin/
     cmds:
-      - go build ./...
+      - go build -o ./bin/lambdactl ./cmd/lambdactl
+      - go build -o ./bin/manager ./cmd/manager
 
   build:
     desc: Build and push multi-arch Docker image
