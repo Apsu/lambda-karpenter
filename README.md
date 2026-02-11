@@ -37,20 +37,27 @@ KUBECONFIG=./my-cluster.kubeconfig
 
 ### 1. Bootstrap a controller node
 
-Launch a Lambda instance, install RKE2, and extract the kubeconfig — all in one
-command:
+Copy the example bootstrap config and customize it:
+
+```bash
+mkdir -p configs
+cp examples/bootstrap.yaml configs/bootstrap.yaml
+cp examples/bootstrap-controller-cloud-init.yaml configs/
+# Edit configs/bootstrap.yaml — set region, instance type, SSH key, etc.
+```
+
+Then launch the controller:
 
 ```bash
 lambdactl k8s bootstrap \
-  --region us-east-3 \
-  --instance-type gpu_1x_gh200 \
-  --image-family lambda-stack-24-04 \
-  --ssh-key my-key \
-  --cloud-init examples/bootstrap-controller-cloud-init.yaml \
-  --rke2-token <token> \
-  --cluster-name my-cluster \
-  --nodeclass-template examples/lambdanodeclass.yaml
+  --config configs/bootstrap.yaml \
+  --rke2-token <token>
 ```
+
+The config file specifies region, instance type, SSH key, cloud-init template, and
+other settings. All config fields can be overridden with CLI flags. See
+`examples/bootstrap.yaml` for the full schema and `lambdactl k8s bootstrap -h` for
+all options.
 
 This will:
 1. Launch the instance and wait for it to become active
@@ -96,7 +103,7 @@ terminate --id <instance-id> [--confirm]
 ### Cluster lifecycle (`k8s`)
 
 ```
-k8s bootstrap      Launch controller, install RKE2, extract kubeconfig
+k8s bootstrap      Launch controller, install RKE2, extract kubeconfig [--config]
 k8s kubeconfig     Extract kubeconfig from existing remote RKE2 node
 k8s deploy         Install GPU operator + lambda-karpenter + apply resources
 ```
@@ -128,6 +135,19 @@ k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
 --kubeconfig <path>         Path to kubeconfig (or KUBECONFIG)
 ```
 
+### Config files
+
+Both `launch` and `k8s bootstrap` support `--config` for a YAML config file.
+Config values are loaded first, then CLI flags override. See `examples/` for
+templates:
+
+- `examples/bootstrap.yaml` — bootstrap controller config
+- `examples/launch.yaml` — standalone instance launch config
+- `examples/bootstrap-controller-cloud-init.yaml` — cloud-init template for RKE2
+- `examples/lambdanodeclass.yaml` — LambdaNodeClass template (Go `text/template`)
+
+Copy examples to `configs/` (gitignored) and customize for your cluster.
+
 ## Development
 
 ### Taskfile
@@ -137,6 +157,7 @@ k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
 
 ```bash
 task                    # build + test + vet
+task build-go           # compile binaries to ./bin/
 task build              # multi-arch Docker image (push)
 task build-local        # local Docker image (no push)
 task test               # go test ./...

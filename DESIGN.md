@@ -125,6 +125,5 @@ place.
 
 ### Full documentation
 
-- Deployment sequence: bootstrap controller → scp kubeconfig → deploy GPU
-  operator + lambda-karpenter → apply NodeClass + NodePool.
-- How to regenerate `lambdanodeclass.generated.yaml` from the bootstrap script.
+- Deployment sequence: `lambdactl k8s bootstrap` → `lambdactl k8s deploy` →
+  `lambdactl k8s apply`. See README.md for the current workflow.

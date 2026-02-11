@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -171,12 +172,5 @@ func runHelmTolerant(dryRun bool, args []string) {
 }
 
 func formatCmd(args []string) string {
-	s := ""
-	for i, a := range args {
-		if i > 0 {
-			s += " "
-		}
-		s += a
-	}
-	return s
+	return strings.Join(args, " ")
 }

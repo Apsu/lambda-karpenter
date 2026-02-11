@@ -17,6 +17,8 @@ runcmd:
       cat <<CFG > /etc/rancher/rke2/config.yaml
       token: {{.RKE2Token}}
       cni: flannel
+      node-taint:
+        - nvidia.com/gpu=true:NoSchedule
       CFG
       if [ -n "$PUBLIC_IP" ]; then
         cat <<CFG >> /etc/rancher/rke2/config.yaml

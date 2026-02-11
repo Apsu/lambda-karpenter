@@ -12,7 +12,24 @@ import (
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
 	"golang.org/x/crypto/ssh"
+	"sigs.k8s.io/yaml"
 )
+
+// BootstrapConfig is the YAML config file format for bootstrap.
+type BootstrapConfig struct {
+	ClusterName       string `json:"clusterName" yaml:"clusterName"`
+	Region            string `json:"region" yaml:"region"`
+	InstanceType      string `json:"instanceType" yaml:"instanceType"`
+	ImageFamily       string `json:"imageFamily" yaml:"imageFamily"`
+	SSHKeyName        string `json:"sshKeyName" yaml:"sshKeyName"`
+	SSHKeyPath        string `json:"sshKeyPath" yaml:"sshKeyPath"`
+	SSHUser           string `json:"sshUser" yaml:"sshUser"`
+	CloudInit         string `json:"cloudInit" yaml:"cloudInit"`
+	RKE2Token         string `json:"rke2Token" yaml:"rke2Token"`
+	KubeconfigOut     string `json:"kubeconfigOut" yaml:"kubeconfigOut"`
+	NodeclassOut      string `json:"nodeclassOut" yaml:"nodeclassOut"`
+	NodeclassTemplate string `json:"nodeclassTemplate" yaml:"nodeclassTemplate"`
+}
 
 // templateData is the context available to all Go templates rendered by bootstrap.
 type templateData struct {
@@ -27,24 +44,76 @@ type templateData struct {
 
 type BootstrapCmd struct {
 	APIFlags
-	Region            string        `name:"region" required:"" help:"Lambda Cloud region."`
-	InstanceType      string        `name:"instance-type" required:"" help:"Instance type."`
-	ImageFamily       string        `name:"image-family" required:"" help:"Image family."`
-	SSHKey            string        `name:"ssh-key" required:"" help:"Lambda SSH key name."`
+	Config            string        `name:"config" help:"Path to YAML config."`
+	Region            string        `name:"region" help:"Lambda Cloud region."`
+	InstanceType      string        `name:"instance-type" help:"Instance type."`
+	ImageFamily       string        `name:"image-family" help:"Image family."`
+	SSHKey            string        `name:"ssh-key" help:"Lambda SSH key name."`
 	SSHKeyPath        string        `name:"ssh-key-path" help:"Path to local SSH private key."`
-	SSHUser           string        `name:"ssh-user" default:"ubuntu" help:"SSH username."`
-	CloudInit         string        `name:"cloud-init" required:"" help:"Path to cloud-init template."`
-	RKE2Token         string        `name:"rke2-token" required:"" help:"RKE2 join token."`
-	ClusterName       string        `name:"cluster-name" required:"" help:"Cluster name."`
+	SSHUser           string        `name:"ssh-user" help:"SSH username (default ubuntu)."`
+	CloudInit         string        `name:"cloud-init" help:"Path to cloud-init template."`
+	RKE2Token         string        `name:"rke2-token" help:"RKE2 join token."`
+	ClusterName       string        `name:"cluster-name" help:"Cluster name."`
 	KubeconfigOut     string        `name:"kubeconfig-out" help:"Output kubeconfig path (default CLUSTER_NAME.kubeconfig)."`
-	NodeclassOut      string        `name:"nodeclass-out" default:"configs/lambdanodeclass.yaml" help:"Output nodeclass YAML path."`
+	NodeclassOut      string        `name:"nodeclass-out" help:"Output nodeclass YAML path (default configs/lambdanodeclass.yaml)."`
 	NodeclassTemplate string        `name:"nodeclass-template" help:"Path to nodeclass YAML template."`
 	Timeout           time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
 }
 
 func (c *BootstrapCmd) Run() error {
-	if c.KubeconfigOut == "" {
-		c.KubeconfigOut = c.ClusterName + ".kubeconfig"
+	var cfg BootstrapConfig
+	if c.Config != "" {
+		data, err := os.ReadFile(c.Config)
+		fatalIf(err)
+		fatalIf(yaml.Unmarshal(data, &cfg))
+	}
+
+	// CLI flags override config values.
+	applyStringOverride(&cfg.ClusterName, c.ClusterName)
+	applyStringOverride(&cfg.Region, c.Region)
+	applyStringOverride(&cfg.InstanceType, c.InstanceType)
+	applyStringOverride(&cfg.ImageFamily, c.ImageFamily)
+	applyStringOverride(&cfg.SSHKeyName, c.SSHKey)
+	applyStringOverride(&cfg.SSHKeyPath, c.SSHKeyPath)
+	applyStringOverride(&cfg.SSHUser, c.SSHUser)
+	applyStringOverride(&cfg.CloudInit, c.CloudInit)
+	applyStringOverride(&cfg.RKE2Token, c.RKE2Token)
+	applyStringOverride(&cfg.KubeconfigOut, c.KubeconfigOut)
+	applyStringOverride(&cfg.NodeclassOut, c.NodeclassOut)
+	applyStringOverride(&cfg.NodeclassTemplate, c.NodeclassTemplate)
+
+	// Apply defaults.
+	if cfg.SSHUser == "" {
+		cfg.SSHUser = "ubuntu"
+	}
+	if cfg.NodeclassOut == "" {
+		cfg.NodeclassOut = "configs/lambdanodeclass.yaml"
+	}
+	if cfg.KubeconfigOut == "" {
+		cfg.KubeconfigOut = cfg.ClusterName + ".kubeconfig"
+	}
+
+	// Validate required fields.
+	if cfg.ClusterName == "" {
+		fatalf("cluster-name is required")
+	}
+	if cfg.Region == "" {
+		fatalf("region is required")
+	}
+	if cfg.InstanceType == "" {
+		fatalf("instance-type is required")
+	}
+	if cfg.ImageFamily == "" {
+		fatalf("image-family is required")
+	}
+	if cfg.SSHKeyName == "" {
+		fatalf("ssh-key is required")
+	}
+	if cfg.CloudInit == "" {
+		fatalf("cloud-init is required")
+	}
+	if cfg.RKE2Token == "" {
+		fatalf("rke2-token is required")
 	}
 
 	client := c.mustClient()
@@ -53,31 +122,31 @@ func (c *BootstrapCmd) Run() error {
 	defer cancel()
 
 	td := templateData{
-		ClusterName:  c.ClusterName,
-		Region:       c.Region,
-		InstanceType: c.InstanceType,
-		ImageFamily:  c.ImageFamily,
-		SSHKeyName:   c.SSHKey,
-		RKE2Token:    c.RKE2Token,
+		ClusterName:  cfg.ClusterName,
+		Region:       cfg.Region,
+		InstanceType: cfg.InstanceType,
+		ImageFamily:  cfg.ImageFamily,
+		SSHKeyName:   cfg.SSHKeyName,
+		RKE2Token:    cfg.RKE2Token,
 	}
 
 	// 1. Render cloud-init template.
-	userData, err := renderTemplate(c.CloudInit, td)
+	userData, err := renderTemplate(cfg.CloudInit, td)
 	fatalIf(err)
 
 	// 2. Launch instance.
-	instanceName := c.ClusterName + "-controller"
-	fmt.Printf("launching %s (%s in %s)...\n", instanceName, c.InstanceType, c.Region)
+	instanceName := cfg.ClusterName + "-controller"
+	fmt.Printf("launching %s (%s in %s)...\n", instanceName, cfg.InstanceType, cfg.Region)
 	ids, err := client.LaunchInstance(ctx, lambdaclient.LaunchRequest{
 		Name:             instanceName,
 		Hostname:         instanceName,
-		RegionName:       c.Region,
-		InstanceTypeName: c.InstanceType,
+		RegionName:       cfg.Region,
+		InstanceTypeName: cfg.InstanceType,
 		UserData:         string(userData),
-		SSHKeyNames:      []string{c.SSHKey},
-		Image:            &lambdaclient.ImageSpec{Family: c.ImageFamily},
+		SSHKeyNames:      []string{cfg.SSHKeyName},
+		Image:            &lambdaclient.ImageSpec{Family: cfg.ImageFamily},
 		Tags: []lambdaclient.TagEntry{
-			{Key: "cluster", Value: c.ClusterName},
+			{Key: "cluster", Value: cfg.ClusterName},
 			{Key: "role", Value: "controller"},
 		},
 	})
@@ -125,7 +194,7 @@ func (c *BootstrapCmd) Run() error {
 	// 4. SSH -> wait for RKE2 kubeconfig -> download.
 	//    If the connection drops (e.g. host reboots during RKE2 install),
 	//    reconnect and resume waiting.
-	sshCfg, err := sshConfig(c.SSHUser, c.SSHKeyPath)
+	sshCfg, err := sshConfig(cfg.SSHUser, cfg.SSHKeyPath)
 	fatalIf(err)
 
 	var sshClient *ssh.Client
@@ -160,7 +229,7 @@ func (c *BootstrapCmd) Run() error {
 	// 5. Parse and rewrite kubeconfig.
 	kubeCfg, err := parseKubeconfig(raw)
 	fatalIf(err)
-	rewriteKubeconfig(kubeCfg, publicIP, c.ClusterName)
+	rewriteKubeconfig(kubeCfg, publicIP, cfg.ClusterName)
 
 	data, err := serializeKubeconfig(kubeCfg)
 	fatalIf(err)
@@ -177,21 +246,21 @@ func (c *BootstrapCmd) Run() error {
 	internalIP = strings.TrimSpace(internalIP)
 
 	// 8. Write kubeconfig.
-	fatalIf(writeKubeconfigFile(c.KubeconfigOut, data))
-	fmt.Printf("kubeconfig written to %s\n", c.KubeconfigOut)
-	fmt.Printf("export KUBECONFIG=%s\n", c.KubeconfigOut)
+	fatalIf(writeKubeconfigFile(cfg.KubeconfigOut, data))
+	fmt.Printf("kubeconfig written to %s\n", cfg.KubeconfigOut)
+	fmt.Printf("export KUBECONFIG=%s\n", cfg.KubeconfigOut)
 
 	// 9. Generate nodeclass YAML if template provided.
-	if c.NodeclassTemplate != "" {
+	if cfg.NodeclassTemplate != "" {
 		if internalIP == "" {
 			fmt.Fprintln(os.Stderr, "warning: could not determine internal IP; nodeclass not generated")
 		} else {
 			td.ControllerIP = internalIP
-			rendered, err := renderTemplate(c.NodeclassTemplate, td)
+			rendered, err := renderTemplate(cfg.NodeclassTemplate, td)
 			fatalIf(err)
-			fatalIf(os.MkdirAll(filepath.Dir(c.NodeclassOut), 0755))
-			fatalIf(os.WriteFile(c.NodeclassOut, rendered, 0644))
-			fmt.Printf("nodeclass written to %s\n", c.NodeclassOut)
+			fatalIf(os.MkdirAll(filepath.Dir(cfg.NodeclassOut), 0755))
+			fatalIf(os.WriteFile(cfg.NodeclassOut, rendered, 0644))
+			fmt.Printf("nodeclass written to %s\n", cfg.NodeclassOut)
 		}
 	}
 

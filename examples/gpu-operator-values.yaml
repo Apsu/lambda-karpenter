@@ -1,3 +1,8 @@
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+
 toolkit:
   env:
     - name: CONTAINERD_SOCKET
