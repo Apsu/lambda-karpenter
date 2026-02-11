@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
@@ -22,11 +23,11 @@ import (
 
 var testLog = zap.New(zap.UseDevMode(true))
 
-// gh200Specs is a realistic GH200 instance type spec for tests.
+// gh200Specs is the real GH200 instance type spec from the Lambda API.
 var gh200Specs = lambdaclient.InstanceTypeSpec{
-	VCPUs:      72,
-	MemoryGiB:  480,
-	StorageGiB: 0,
+	VCPUs:      64,
+	MemoryGiB:  432,
+	StorageGiB: 4096,
 	GPUs:       1,
 }
 
@@ -174,8 +175,8 @@ func TestProviderCreateLaunchRequest(t *testing.T) {
 		t.Fatal("expected Capacity to be set")
 	}
 	cpuQty := got.Status.Allocatable[corev1.ResourceCPU]
-	if cpuQty.Value() != 72 {
-		t.Fatalf("expected 72 CPUs, got %d", cpuQty.Value())
+	if cpuQty.Value() != 64 {
+		t.Fatalf("expected 64 CPUs, got %d", cpuQty.Value())
 	}
 	gpuQty := got.Status.Allocatable[corev1.ResourceName("nvidia.com/gpu")]
 	if gpuQty.Value() != 1 {
@@ -631,6 +632,13 @@ func testSchemeAndClass(t *testing.T) (*v1alpha1.LambdaNodeClass, *v1.NodePool, 
 	return class, nodePool, *scheme
 }
 
+// testInstanceTypeCache creates a seeded cache with a long TTL for tests.
+func testInstanceTypeCache(data map[string]lambdaclient.InstanceTypesItem) *lambdaclient.InstanceTypeCache {
+	c := &lambdaclient.InstanceTypeCache{TTL: 1 * time.Hour}
+	c.Seed(data)
+	return c
+}
+
 // testNodeClaim returns a minimal NodeClaim for Create tests.
 func testNodeClaim() *v1.NodeClaim {
 	return &v1.NodeClaim{
@@ -757,8 +765,8 @@ func TestProviderCreateIdempotentByTag(t *testing.T) {
 		t.Fatal("expected Allocatable on idempotent Create")
 	}
 	cpuQty := got.Status.Allocatable[corev1.ResourceCPU]
-	if cpuQty.Value() != 72 {
-		t.Fatalf("expected 72 CPUs, got %d", cpuQty.Value())
+	if cpuQty.Value() != 64 {
+		t.Fatalf("expected 64 CPUs, got %d", cpuQty.Value())
 	}
 }
 
@@ -779,11 +787,11 @@ func TestProviderNodeClaimFromInstanceAllocatable(t *testing.T) {
 	}
 
 	cpu := nc.Status.Allocatable[corev1.ResourceCPU]
-	if cpu.Value() != 72 {
-		t.Fatalf("expected 72 CPUs, got %d", cpu.Value())
+	if cpu.Value() != 64 {
+		t.Fatalf("expected 64 CPUs, got %d", cpu.Value())
 	}
 	mem := nc.Status.Allocatable[corev1.ResourceMemory]
-	expectedMem := int64(480) << 30
+	expectedMem := int64(432) << 30
 	if mem.Value() != expectedMem {
 		t.Fatalf("expected %d memory, got %d", expectedMem, mem.Value())
 	}
@@ -893,8 +901,8 @@ func TestProviderInstanceTypeFromItem(t *testing.T) {
 
 	// Capacity
 	cpu := it.Capacity[corev1.ResourceCPU]
-	if cpu.Value() != 72 {
-		t.Fatalf("expected 72 CPUs, got %d", cpu.Value())
+	if cpu.Value() != 64 {
+		t.Fatalf("expected 64 CPUs, got %d", cpu.Value())
 	}
 	gpu := it.Capacity[corev1.ResourceName("nvidia.com/gpu")]
 	if gpu.Value() != 1 {
@@ -1033,7 +1041,7 @@ func TestProviderListHappyPath(t *testing.T) {
 			},
 			{
 				ID: "i-2", Status: "booting",
-				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, GPUs: 1}},
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}},
 				Region: lambdaclient.Region{Name: "us-west-1"},
 				Tags: []lambdaclient.TagEntry{
 					{Key: "karpenter-sh-cluster", Value: "test"},
@@ -1360,8 +1368,8 @@ func TestProviderBuildLaunchRequestMissingInstanceType(t *testing.T) {
 	}
 	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
 	_, err := p.buildLaunchRequest(nc, class)
-	if err == nil || !strings.Contains(err.Error(), "instanceType") {
-		t.Fatalf("expected instanceType error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot determine instance type") {
+		t.Fatalf("expected 'cannot determine instance type' error, got: %v", err)
 	}
 }
 
@@ -1415,6 +1423,273 @@ func TestSanitizeTagKey(t *testing.T) {
 				t.Fatalf("sanitizeTagKey(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- instanceTypeFromNodeClaim ---
+
+func TestInstanceTypeFromNodeClaim(t *testing.T) {
+	nc := &v1.NodeClaim{
+		Spec: v1.NodeClaimSpec{
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{
+				{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"gpu_1x_gh200"}},
+			},
+		},
+	}
+	got := instanceTypeFromNodeClaim(nc)
+	if got != "gpu_1x_gh200" {
+		t.Fatalf("expected gpu_1x_gh200, got %q", got)
+	}
+}
+
+func TestInstanceTypeFromNodeClaimEmpty(t *testing.T) {
+	nc := &v1.NodeClaim{}
+	got := instanceTypeFromNodeClaim(nc)
+	if got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
+func TestInstanceTypeFromNodeClaimMultipleValues(t *testing.T) {
+	// Multiple values means Karpenter hasn't narrowed to one — should return "".
+	nc := &v1.NodeClaim{
+		Spec: v1.NodeClaimSpec{
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{
+				{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"gpu_1x_gh200", "gpu_1x_a100"}},
+			},
+		},
+	}
+	got := instanceTypeFromNodeClaim(nc)
+	if got != "" {
+		t.Fatalf("expected empty for multiple values, got %q", got)
+	}
+}
+
+// --- buildLaunchRequest from NodeClaim requirements ---
+
+func TestBuildLaunchRequestFromNodeClaimRequirements(t *testing.T) {
+	p := &Provider{clusterName: "test"}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"key"},
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-nc"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{
+				{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"gpu_1x_gh200"}},
+			},
+		},
+	}
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+	if req.InstanceTypeName != "gpu_1x_gh200" {
+		t.Fatalf("expected gpu_1x_gh200, got %s", req.InstanceTypeName)
+	}
+}
+
+func TestBuildLaunchRequestFallbackToNodeClass(t *testing.T) {
+	p := &Provider{clusterName: "test"}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_a100",
+			SSHKeyNames:  []string{"key"},
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-nc"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+		},
+	}
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+	if req.InstanceTypeName != "gpu_1x_a100" {
+		t.Fatalf("expected fallback to gpu_1x_a100, got %s", req.InstanceTypeName)
+	}
+}
+
+func TestBuildLaunchRequestNoInstanceTypeAnywhere(t *testing.T) {
+	p := &Provider{}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{Region: "us-east-3"},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+		},
+	}
+	_, err := p.buildLaunchRequest(nc, class)
+	if err == nil {
+		t.Fatal("expected error when no instance type available")
+	}
+	if !strings.Contains(err.Error(), "cannot determine instance type") {
+		t.Fatalf("expected 'cannot determine instance type' error, got: %v", err)
+	}
+}
+
+func TestBuildLaunchRequestNodeClaimOverridesNodeClass(t *testing.T) {
+	p := &Provider{clusterName: "test"}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_a100",
+			SSHKeyNames:  []string{"key"},
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-nc"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{
+				{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"gpu_1x_gh200"}},
+			},
+		},
+	}
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+	// NodeClaim requirement should take priority over NodeClass spec.
+	if req.InstanceTypeName != "gpu_1x_gh200" {
+		t.Fatalf("expected NodeClaim type gpu_1x_gh200 to override NodeClass gpu_1x_a100, got %s", req.InstanceTypeName)
+	}
+}
+
+func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
+	p := &Provider{clusterName: "my-cluster"}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"key"},
+			UserData:     "instance-type={{.InstanceType}} region={{.Region}}",
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-nc"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+		},
+	}
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+	if req.UserData != "instance-type=gpu_1x_gh200 region=us-east-3" {
+		t.Fatalf("expected rendered userData, got: %s", req.UserData)
+	}
+}
+
+// --- GetInstanceTypes filtering ---
+
+func TestGetInstanceTypesFilteredByNodeClass(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-gh200"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"key"},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs}},
+		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
+	})
+
+	p := New(client, nil, nil, cache, "test", testLog)
+
+	nodePool := &v1.NodePool{
+		Spec: v1.NodePoolSpec{
+			Template: v1.NodeClaimTemplate{
+				Spec: v1.NodeClaimTemplateSpec{
+					NodeClassRef: &v1.NodeClassReference{
+						Group: v1alpha1.Group,
+						Kind:  "LambdaNodeClass",
+						Name:  "lambda-gh200",
+					},
+				},
+			},
+		},
+	}
+
+	its, err := p.GetInstanceTypes(context.Background(), nodePool)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 1 {
+		t.Fatalf("expected 1 filtered instance type, got %d", len(its))
+	}
+	if its[0].Name != "gpu_1x_gh200" {
+		t.Fatalf("expected gpu_1x_gh200, got %s", its[0].Name)
+	}
+}
+
+func TestGetInstanceTypesUnfiltered(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	// NodeClass with no instanceType — should return all types.
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-generic"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"key"},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs}},
+		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
+	})
+
+	p := New(client, nil, nil, cache, "test", testLog)
+
+	nodePool := &v1.NodePool{
+		Spec: v1.NodePoolSpec{
+			Template: v1.NodeClaimTemplate{
+				Spec: v1.NodeClaimTemplateSpec{
+					NodeClassRef: &v1.NodeClassReference{
+						Group: v1alpha1.Group,
+						Kind:  "LambdaNodeClass",
+						Name:  "lambda-generic",
+					},
+				},
+			},
+		},
+	}
+
+	its, err := p.GetInstanceTypes(context.Background(), nodePool)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 2 {
+		t.Fatalf("expected 2 unfiltered instance types, got %d", len(its))
 	}
 }
 

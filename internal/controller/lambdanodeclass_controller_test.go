@@ -107,8 +107,8 @@ func TestReconcileMissingInstanceType(t *testing.T) {
 	if cond == nil {
 		t.Fatal("expected Ready condition")
 	}
-	if cond.Status != metav1.ConditionFalse {
-		t.Fatalf("expected Ready=False, got %s", cond.Status)
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected Ready=True (instanceType is optional), got %s: %s", cond.Status, cond.Message)
 	}
 }
 

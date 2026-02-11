@@ -72,18 +72,46 @@ silent misconfiguration while preserving the schema for forward compatibility.
 
 ---
 
+## Instance Type Selection
+
+### Type-agnostic NodeClass
+
+`LambdaNodeClass.spec.instanceType` is optional. When omitted, the NodeClass
+defines *how* instances join the cluster (region, SSH keys, image, userData)
+while the NodePool defines *what* instance types to use via
+`node.kubernetes.io/instance-type` requirements. Multiple NodePools can share
+a single NodeClass, each selecting different instance types.
+
+When `instanceType` is set, `GetInstanceTypes` filters to only that type and
+`buildLaunchRequest` falls back to it — fully backward compatible.
+
+### userData templating
+
+`spec.userData` supports Go `text/template` actions rendered at launch time.
+Available variables: `{{.InstanceType}}`, `{{.Region}}`, `{{.ClusterName}}`,
+`{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{`
+pass through unmodified (fast path). This enables instance-type-specific node
+labels in cloud-init without requiring a separate NodeClass per type.
+
+For bootstrap-time templates (`.tmpl` files), use Go template escaping to
+preserve launch-time variables: `{{ "{{.InstanceType}}" }}` renders to
+`{{.InstanceType}}` at bootstrap, which the provider then renders at launch.
+
 ## GPU Operator Integration
 
-### Taint strategy
+### No GPU taint
 
-GPU NodePools use a permanent `nvidia.com/gpu:NoSchedule` taint. The NVIDIA
-GPU Operator tolerates this taint by default. GPU workloads must explicitly
-tolerate it, which prevents non-GPU pods from landing on expensive GPU nodes.
+Since all Lambda Cloud instances are GPUs, NodePools do not apply an
+`nvidia.com/gpu:NoSchedule` taint. The GPU resource request is sufficient to
+gate scheduling. Omitting the taint avoids threading tolerations through every
+system component (coredns, ingress-nginx, metrics-server, the GPU Operator
+Deployment itself, etc.). In a mixed GPU/CPU fleet the taint would make sense,
+but Lambda's public cloud is GPU-only.
 
 ### Karpenter startup toleration
 
 The GPU Operator's DaemonSets and NFD worker need a
-`karpenter.sh/unregistered:NoExecute` toleration so they can schedule on nodes
+`karpenter.sh/unregistered:NoSchedule` toleration so they can schedule on nodes
 that haven't finished registering yet.
 
 ### Consolidation
@@ -125,6 +153,5 @@ place.
 
 ### Full documentation
 
-- Deployment sequence: bootstrap controller → scp kubeconfig → deploy GPU
-  operator + lambda-karpenter → apply NodeClass + NodePool.
-- How to regenerate `lambdanodeclass.generated.yaml` from the bootstrap script.
+- Deployment sequence: `lambdactl k8s bootstrap` → `lambdactl k8s deploy` →
+  `lambdactl k8s apply`. See README.md for the current workflow.

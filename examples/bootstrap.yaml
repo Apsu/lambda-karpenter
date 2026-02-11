@@ -1,0 +1,25 @@
+# Bootstrap config for lambdactl k8s bootstrap.
+# Copy to configs/bootstrap.yaml and customize for your cluster.
+#
+# Usage:
+#   lambdactl k8s bootstrap --config configs/bootstrap.yaml --rke2-token <token>
+#
+# CLI flags override config file values. Sensitive values like --rke2-token
+# and LAMBDA_API_TOKEN are best passed via flags or environment variables.
+
+clusterName: my-cluster
+region: us-east-3
+instanceType: gpu_1x_gh200
+imageFamily: lambda-stack-24-04
+sshKeyName: my-key
+cloudInit: examples/bootstrap-controller-cloud-init.yaml
+
+# Optional: path to local SSH private key (default: ssh-agent).
+# sshKeyPath: ~/.ssh/id_ed25519
+
+# Optional: generate a LambdaNodeClass from template after bootstrap.
+# nodeclassTemplate: examples/lambdanodeclass.yaml
+# nodeclassOut: configs/lambdanodeclass.yaml
+
+# Optional: override output kubeconfig path (default: CLUSTER_NAME.kubeconfig).
+# kubeconfigOut: my-cluster.kubeconfig

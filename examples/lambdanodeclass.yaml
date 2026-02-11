@@ -4,7 +4,6 @@ metadata:
   name: lambda-gh200
 spec:
   region: {{.Region}}
-  instanceType: {{.InstanceType}}
   image:
     family: {{.ImageFamily}}
   sshKeyNames:
@@ -40,7 +39,7 @@ spec:
           kubelet-arg:
             - provider-id=lambda://${INSTANCE_ID}
           node-label:
-            - node.kubernetes.io/instance-type={{.InstanceType}}
+            - node.kubernetes.io/instance-type={{ "{{.InstanceType}}" }}
             - topology.kubernetes.io/region={{.Region}}
             - topology.kubernetes.io/zone={{.Region}}
             - karpenter.sh/capacity-type=on-demand

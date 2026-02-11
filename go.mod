@@ -3,6 +3,7 @@ module github.com/evecallicoat/lambda-karpenter
 go 1.25.6
 
 require (
+	github.com/alecthomas/kong v1.14.0
 	github.com/awslabs/operatorpkg v0.0.0-20251222193911-34e9a1898737
 	github.com/go-logr/logr v1.4.3
 	github.com/joho/godotenv v1.5.1

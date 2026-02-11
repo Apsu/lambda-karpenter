@@ -247,8 +247,24 @@ func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) 
 	if err != nil {
 		return nil, err
 	}
+
+	// If the NodePool's NodeClass pins a specific instance type, filter to only that type.
+	var pinnedType string
+	if nodePool != nil && nodePool.Spec.Template.Spec.NodeClassRef != nil {
+		ref := nodePool.Spec.Template.Spec.NodeClassRef
+		if ref.Group == v1alpha1.Group && ref.Kind == "LambdaNodeClass" {
+			var class v1alpha1.LambdaNodeClass
+			if err := p.kubeClient.Get(ctx, types.NamespacedName{Name: ref.Name}, &class); err == nil {
+				pinnedType = class.Spec.InstanceType
+			}
+		}
+	}
+
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, len(items))
 	for name, item := range items {
+		if pinnedType != "" && name != pinnedType {
+			continue
+		}
 		instanceTypes = append(instanceTypes, p.instanceTypeFromItem(name, item))
 	}
 	return instanceTypes, nil
@@ -270,12 +286,32 @@ func (p *Provider) resolveNodeClass(ctx context.Context, nodeClaim *v1.NodeClaim
 	return &class, nil
 }
 
+// instanceTypeFromNodeClaim extracts the instance type that Karpenter selected
+// from the NodeClaim's requirements. Returns "" if not found.
+func instanceTypeFromNodeClaim(nc *v1.NodeClaim) string {
+	for _, req := range nc.Spec.Requirements {
+		if req.Key == corev1.LabelInstanceTypeStable &&
+			req.Operator == corev1.NodeSelectorOpIn &&
+			len(req.Values) == 1 {
+			return req.Values[0]
+		}
+	}
+	return ""
+}
+
 func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.LambdaNodeClass) (lambdaclient.LaunchRequest, error) {
 	if class.Spec.Region == "" {
 		return lambdaclient.LaunchRequest{}, fmt.Errorf("nodeclass region is required")
 	}
-	if class.Spec.InstanceType == "" {
-		return lambdaclient.LaunchRequest{}, fmt.Errorf("nodeclass instanceType is required")
+
+	// Resolve instance type: prefer NodeClaim requirements (Karpenter's selection),
+	// fall back to NodeClass spec (backward compat with pinned NodeClass).
+	instanceType := instanceTypeFromNodeClaim(nodeClaim)
+	if instanceType == "" {
+		instanceType = class.Spec.InstanceType
+	}
+	if instanceType == "" {
+		return lambdaclient.LaunchRequest{}, fmt.Errorf("cannot determine instance type: neither nodeclaim requirements nor nodeclass spec provide one")
 	}
 
 	tags := map[string]string{}
@@ -310,12 +346,28 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		launchTags = append(launchTags, lambdaclient.TagEntry{Key: key, Value: v})
 	}
 
+	// Render userData templates with launch-time context.
+	udCtx := userDataContext{
+		InstanceType:  instanceType,
+		Region:        class.Spec.Region,
+		ClusterName:   p.clusterName,
+		NodeClaimName: nodeClaim.Name,
+	}
+	if class.Spec.Image != nil {
+		udCtx.ImageFamily = class.Spec.Image.Family
+		udCtx.ImageID = class.Spec.Image.ID
+	}
+	renderedUserData, err := renderUserData(class.Spec.UserData, udCtx)
+	if err != nil {
+		return lambdaclient.LaunchRequest{}, fmt.Errorf("rendering userData template: %w", err)
+	}
+
 	req := lambdaclient.LaunchRequest{
 		Name:             nodeClaim.Name,
 		Hostname:         sanitizeHostname(nodeClaim.Name),
 		RegionName:       class.Spec.Region,
-		InstanceTypeName: class.Spec.InstanceType,
-		UserData:         class.Spec.UserData,
+		InstanceTypeName: instanceType,
+		UserData:         renderedUserData,
 		SSHKeyNames:      class.Spec.SSHKeyNames,
 		Tags:             launchTags,
 	}

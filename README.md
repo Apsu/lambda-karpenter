@@ -37,20 +37,27 @@ KUBECONFIG=./my-cluster.kubeconfig
 
 ### 1. Bootstrap a controller node
 
-Launch a Lambda instance, install RKE2, and extract the kubeconfig — all in one
-command:
+Copy the example bootstrap config and customize it:
+
+```bash
+mkdir -p configs
+cp examples/bootstrap.yaml configs/bootstrap.yaml
+cp examples/bootstrap-controller-cloud-init.yaml configs/
+# Edit configs/bootstrap.yaml — set region, instance type, SSH key, etc.
+```
+
+Then launch the controller:
 
 ```bash
 lambdactl k8s bootstrap \
-  --region us-east-3 \
-  --instance-type gpu_1x_gh200 \
-  --image-family lambda-stack-24-04 \
-  --ssh-key my-key \
-  --cloud-init examples/bootstrap-controller-cloud-init.yaml \
-  --rke2-token <token> \
-  --cluster-name my-cluster \
-  --nodeclass-template examples/lambdanodeclass.yaml
+  --config configs/bootstrap.yaml \
+  --rke2-token <token>
 ```
+
+The config file specifies region, instance type, SSH key, cloud-init template, and
+other settings. All config fields can be overridden with CLI flags. See
+`examples/bootstrap.yaml` for the full schema and `lambdactl k8s bootstrap -h` for
+all options.
 
 This will:
 1. Launch the instance and wait for it to become active
@@ -96,7 +103,7 @@ terminate --id <instance-id> [--confirm]
 ### Cluster lifecycle (`k8s`)
 
 ```
-k8s bootstrap      Launch controller, install RKE2, extract kubeconfig
+k8s bootstrap      Launch controller, install RKE2, extract kubeconfig [--config]
 k8s kubeconfig     Extract kubeconfig from existing remote RKE2 node
 k8s deploy         Install GPU operator + lambda-karpenter + apply resources
 ```
@@ -128,6 +135,19 @@ k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
 --kubeconfig <path>         Path to kubeconfig (or KUBECONFIG)
 ```
 
+### Config files
+
+Both `launch` and `k8s bootstrap` support `--config` for a YAML config file.
+Config values are loaded first, then CLI flags override. See `examples/` for
+templates:
+
+- `examples/bootstrap.yaml` — bootstrap controller config
+- `examples/launch.yaml` — standalone instance launch config
+- `examples/bootstrap-controller-cloud-init.yaml` — cloud-init template for RKE2
+- `examples/lambdanodeclass.yaml` — LambdaNodeClass template (Go `text/template`)
+
+Copy examples to `configs/` (gitignored) and customize for your cluster.
+
 ## Development
 
 ### Taskfile
@@ -137,6 +157,7 @@ k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
 
 ```bash
 task                    # build + test + vet
+task build-go           # compile binaries to ./bin/
 task build              # multi-arch Docker image (push)
 task build-local        # local Docker image (no push)
 task test               # go test ./...
@@ -196,12 +217,22 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   -f examples/gpu-operator-values.yaml
 ```
 
-The example NodePool applies an `nvidia.com/gpu:NoSchedule` taint. The GPU Operator
-tolerates this by default. GPU workload pods must include a matching toleration
-(see `examples/gpu-test-pod.yaml`).
+Since all Lambda Cloud instances are GPUs, the example NodePools do not apply a
+GPU taint — the `nvidia.com/gpu` resource request is sufficient to gate GPU
+workload scheduling. This avoids threading tolerations through every system
+component (coredns, ingress, metrics-server, etc.).
 
 ## Notes
 
+- **NodeClass is instance-type-agnostic.** `spec.instanceType` is optional. When
+  omitted, the NodePool's `node.kubernetes.io/instance-type` requirement drives
+  instance type selection. Multiple NodePools can share one NodeClass. When set,
+  the NodeClass pins to that type (backward compatible).
+- **userData supports Go templates.** Use `{{.InstanceType}}`, `{{.Region}}`,
+  `{{.ClusterName}}`, `{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`
+  in `spec.userData`. Templates are rendered at launch time. Strings without `{{`
+  pass through unchanged. For bootstrap `.tmpl` files, escape launch-time vars:
+  `{{ "{{.InstanceType}}" }}`.
 - Worker nodes join the cluster with `provider-id=lambda://<instance-id>`. The
   example cloud-init reads the instance ID from cloud-init metadata and strips
   dashes to match the API format.

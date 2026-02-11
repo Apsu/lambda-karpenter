@@ -10,11 +10,10 @@ spec:
         group: karpenter.lambda.cloud
         kind: LambdaNodeClass
         name: lambda-gh200
-      taints:
-        - key: nvidia.com/gpu
-          value: "true"
-          effect: NoSchedule
       requirements:
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["gpu_1x_gh200"]
         - key: kubernetes.io/arch
           operator: In
           values: ["arm64"]

@@ -8,9 +8,6 @@ driver:
 
 daemonsets:
   tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Exists"
-      effect: "NoSchedule"
     - key: "karpenter.sh/unregistered"
       operator: "Exists"
       effect: "NoSchedule"

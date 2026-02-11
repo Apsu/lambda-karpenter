@@ -4,10 +4,6 @@ metadata:
   name: gpu-test
 spec:
   restartPolicy: Never
-  tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
   containers:
     - name: gpu-sleep
       image: ubuntu:22.04
