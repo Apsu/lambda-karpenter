@@ -1,6 +1,9 @@
+nameOverride: ""
+fullnameOverride: ""
+
 image:
   repository: apsu/lambda-karpenter
-  tag: "0.1.9"
+  tag: "0.3.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -13,6 +16,10 @@ serviceAccount:
 rbac:
   create: true
 
+pdb:
+  create: true
+  maxUnavailable: 1
+
 resources: {}
 
 nodeSelector: {}
@@ -23,7 +30,6 @@ affinity: {}
 
 config:
   clusterName: ""
-  apiToken: ""
   apiTokenSecret:
     name: ""
     key: "token"
@@ -34,6 +40,3 @@ config:
   featureGates: "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false"
 
 extraEnv: []
-
-crds:
-  install: true

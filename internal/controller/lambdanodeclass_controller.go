@@ -3,9 +3,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -30,6 +32,20 @@ func (r *LambdaNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	} else {
 		cond.SetTrue(status.ConditionReady)
 	}
+
+	// Populate image resolution status (pass-through for now).
+	// TODO: Actual resolution (family→ID) requires calling the Lambda Images API.
+	if nc.Spec.Image != nil {
+		nc.Status.ResolvedImageID = nc.Spec.Image.ID
+		nc.Status.ResolvedImageFamily = nc.Spec.Image.Family
+	} else {
+		nc.Status.ResolvedImageID = ""
+		nc.Status.ResolvedImageFamily = ""
+	}
+
+	now := metav1.NewTime(time.Now())
+	nc.Status.LastValidatedAt = &now
+
 	if err := r.Status().Update(ctx, &nc); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -60,6 +76,9 @@ func validateNodeClass(nc *v1alpha1.LambdaNodeClass) error {
 		if hasID == hasFamily {
 			return fmt.Errorf("spec.image must set exactly one of id or family")
 		}
+	}
+	if len(nc.Spec.InstanceTypeSelector) > 0 {
+		return fmt.Errorf("spec.instanceTypeSelector is not yet supported")
 	}
 	return nil
 }

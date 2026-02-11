@@ -11,10 +11,25 @@ spec:
     singular: lambdanodeclass
     shortNames:
       - lnc
+    categories:
+      - karpenter
   versions:
     - name: v1alpha1
       served: true
       storage: true
+      additionalPrinterColumns:
+        - name: Region
+          type: string
+          jsonPath: .spec.region
+        - name: InstanceType
+          type: string
+          jsonPath: .spec.instanceType
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
       schema:
         openAPIV3Schema:
           type: object
@@ -27,8 +42,10 @@ spec:
               properties:
                 region:
                   type: string
+                  minLength: 1
                 instanceType:
                   type: string
+                  minLength: 1
                 instanceTypeSelector:
                   type: array
                   items:
@@ -72,6 +89,32 @@ spec:
                   type: array
                   items:
                     type: object
-                    x-kubernetes-preserve-unknown-fields: true
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                        maxLength: 1024
+                      message:
+                        type: string
+                        maxLength: 32768
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
       subresources:
         status: {}

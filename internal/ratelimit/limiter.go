@@ -32,14 +32,22 @@ func (l *Limiter) Wait(ctx context.Context) error {
 }
 
 // WaitLaunch enforces a minimum spacing between launch requests.
+// Each caller reserves the next available slot under the lock, then sleeps
+// outside the lock until its slot arrives. This guarantees spacing even when
+// multiple goroutines call WaitLaunch concurrently.
 func (l *Limiter) WaitLaunch(ctx context.Context) error {
 	l.launchMu.Lock()
-	defer l.launchMu.Unlock()
-
 	now := time.Now()
 	next := l.lastLaunch.Add(l.launchMin)
-	if now.Before(next) {
-		t := time.NewTimer(next.Sub(now))
+	if now.After(next) {
+		next = now
+	}
+	l.lastLaunch = next
+	l.launchMu.Unlock()
+
+	wait := time.Until(next)
+	if wait > 0 {
+		t := time.NewTimer(wait)
 		select {
 		case <-t.C:
 		case <-ctx.Done():
@@ -47,6 +55,5 @@ func (l *Limiter) WaitLaunch(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	l.lastLaunch = time.Now()
 	return nil
 }

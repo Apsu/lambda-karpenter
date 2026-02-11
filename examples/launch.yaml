@@ -1,0 +1,9 @@
+name: my-instance
+hostname: my-instance
+region: us-east-3
+instanceType: gpu_1x_gh200
+imageFamily: lambda-stack-24-04
+sshKeyNames:
+  - my-key
+tags:
+  environment: dev

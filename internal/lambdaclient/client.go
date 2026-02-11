@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
@@ -142,6 +145,19 @@ type LaunchRequest struct {
 	Image            *ImageSpec             `json:"image,omitempty"`
 	SSHKeyNames      []string               `json:"ssh_key_names,omitempty"`
 	FirewallRulesets []FirewallRulesetEntry `json:"firewall_rulesets,omitempty"`
+	PublicIP         *bool                  `json:"public_ip,omitempty"`
+	Pool             string                 `json:"pool,omitempty"`
+}
+
+// IsCapacityError returns true if the error indicates insufficient capacity.
+func IsCapacityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "503") ||
+		strings.Contains(msg, "capacity") ||
+		strings.Contains(msg, "no available")
 }
 
 func (c *Client) ListInstances(ctx context.Context) ([]Instance, error) {
@@ -158,7 +174,7 @@ func (c *Client) GetInstance(ctx context.Context, id string) (*Instance, error) 
 	var resp struct {
 		Data Instance `json:"data"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/instances/"+id, nil, &resp, false); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/instances/"+url.PathEscape(id), nil, &resp, false); err != nil {
 		return nil, err
 	}
 	return &resp.Data, nil
@@ -217,6 +233,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if isLaunch {
 			if err := c.limiter.WaitLaunch(ctx); err != nil {
 				return err
@@ -238,7 +258,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("Content-Type", "application/json")
 
+		start := time.Now()
 		resp, err := c.http.Do(req)
+		duration := time.Since(start).Seconds()
+		apiRequestDuration.WithLabelValues(method, path).Observe(duration)
 		if err != nil {
 			if !shouldRetry(attempt) {
 				return err
@@ -248,6 +271,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 			}
 			continue
 		}
+		apiRequestsTotal.WithLabelValues(method, path, strconv.Itoa(resp.StatusCode)).Inc()
 
 		if resp.StatusCode >= 400 {
 			data, _ := io.ReadAll(resp.Body)
@@ -269,13 +293,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 		err = decoder.Decode(out)
 		_ = resp.Body.Close()
 		if err != nil {
-			if !shouldRetry(attempt) {
-				return err
-			}
-			if err := sleepBackoff(ctx, attempt); err != nil {
-				return err
-			}
-			continue
+			// JSON decode errors on successful HTTP responses are not retryable.
+			return fmt.Errorf("lambda api %s %s: decode response: %w", method, path, err)
 		}
 		return nil
 	}
@@ -297,6 +316,9 @@ func sleepBackoff(ctx context.Context, attempt int) error {
 	if backoff > 10*time.Second {
 		backoff = 10 * time.Second
 	}
+	// Add jitter: random duration up to half the backoff.
+	jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
+	backoff += jitter
 	timer := time.NewTimer(backoff)
 	defer timer.Stop()
 	select {

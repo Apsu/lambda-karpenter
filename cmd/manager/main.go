@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -19,13 +21,22 @@ import (
 )
 
 func main() {
-	log.SetLogger(zap.New(zap.UseDevMode(true)))
+	devMode := strings.EqualFold(os.Getenv("LOG_DEV_MODE"), "true")
+	log.SetLogger(zap.New(zap.UseDevMode(devMode)))
 
 	cfg, err := config.Load()
 	if err != nil {
 		log.Log.Error(err, "invalid configuration")
 		os.Exit(1)
 	}
+
+	log.Log.Info("starting lambda-karpenter",
+		"clusterName", cfg.ClusterName,
+		"baseURL", cfg.BaseURL,
+		"rps", cfg.RPS,
+		"launchMinInterval", cfg.LaunchMinInterval,
+		"instanceTypeCacheTTL", cfg.InstanceTypeCacheTTL,
+	)
 
 	ctx, op := operator.NewOperator()
 
@@ -42,7 +53,8 @@ func main() {
 	}
 
 	cache := lambdaclient.NewInstanceTypeCache(lambdaAPI, cfg.InstanceTypeCacheTTL)
-	cloudProvider := provider.New(op.GetClient(), lambdaAPI, cache, cfg.ClusterName)
+	listCache := lambdaclient.NewInstanceListCache(lambdaAPI, 5*time.Second)
+	cloudProvider := provider.New(op.GetClient(), lambdaAPI, listCache, cache, cfg.ClusterName, log.Log)
 	overlayProvider := overlay.Decorate(cloudProvider, op.GetClient(), op.InstanceTypeStore)
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), overlayProvider)
 

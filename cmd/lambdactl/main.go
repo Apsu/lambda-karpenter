@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -11,12 +12,18 @@ import (
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
 	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
+	"github.com/joho/godotenv"
+	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 )
 
 const defaultBaseURL = "https://cloud.lambda.ai"
 
 func main() {
+	// Load .env (project defaults) then .env.local (personal overrides).
+	// Existing env vars are never overwritten. Missing files are silently skipped.
+	_ = godotenv.Load(".env", ".env.local")
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -66,16 +73,7 @@ func listInstances(args []string) {
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -98,16 +96,7 @@ func getInstance(args []string) {
 	if *id == "" {
 		fatalf("--id is required")
 	}
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -177,16 +166,7 @@ func getImage(args []string) {
 		fatalf("one of --id, --family, or --name is required")
 	}
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	ctx := context.Background()
@@ -256,7 +236,7 @@ type LaunchConfig struct {
 func launchInstance(args []string) {
 	fs := flag.NewFlagSet("launch", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to YAML config")
-	confirm := fs.Bool("confirm", false, "Confirm launch")
+	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
 	name := fs.String("name", "", "Instance name")
 	hostname := fs.String("hostname", "", "Hostname")
 	region := fs.String("region", "", "Region name")
@@ -274,10 +254,6 @@ func launchInstance(args []string) {
 	base, token := addCommonFlags(fs)
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
-
-	if !*confirm {
-		fatalf("launch requires --confirm")
-	}
 
 	cfg := LaunchConfig{
 		Tags: map[string]string{},
@@ -335,16 +311,15 @@ func launchInstance(args []string) {
 		cfg.Hostname = cfg.Name
 	}
 
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
+	if !*confirm {
+		label := cfg.InstanceType + " in " + cfg.Region
+		if cfg.Name != "" {
+			label = cfg.Name + " (" + label + ")"
 		}
+		confirmAction("launch " + label)
 	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+
+	resolveToken(token, tokenFile)
 
 	client := mustClientWith(*base, *token)
 	req := lambdaclient.LaunchRequest{
@@ -378,17 +353,31 @@ func launchInstance(args []string) {
 func terminateInstances(args []string) {
 	fs := flag.NewFlagSet("terminate", flag.ExitOnError)
 	id := fs.String("id", "", "Instance ID")
-	confirm := fs.Bool("confirm", false, "Confirm termination")
+	confirm := fs.Bool("confirm", false, "Skip interactive confirmation")
+	base, token := addCommonFlags(fs)
+	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
 
-	if !*confirm {
-		fatalf("terminate requires --confirm")
-	}
 	if *id == "" {
 		fatalf("--id is required")
 	}
 
-	fatalf("terminate is disabled by design in this build (requested safety guard)")
+	resolveToken(token, tokenFile)
+	client := mustClientWith(*base, *token)
+	ctx := context.Background()
+
+	// Fetch instance details for the confirmation prompt.
+	inst, err := client.GetInstance(ctx, *id)
+	fatalIf(err)
+
+	if !*confirm {
+		summary := fmt.Sprintf("terminate %s (%s, %s, %s, ip=%s)",
+			inst.ID, inst.Name, inst.Type.Name, inst.Region.Name, inst.IP)
+		confirmAction(summary)
+	}
+
+	fatalIf(client.TerminateInstance(ctx, *id))
+	fmt.Printf("terminated %s\n", *id)
 }
 
 func mustClient(args []string) *lambdaclient.Client {
@@ -396,16 +385,7 @@ func mustClient(args []string) *lambdaclient.Client {
 	base, token := addCommonFlags(fs)
 	tokenFile := fs.String("token-file", "", "Path to token file")
 	_ = fs.Parse(args)
-	if *token == "" && *tokenFile == "" {
-		if _, err := os.Stat("lambda-eve-karpenter.key"); err == nil {
-			*tokenFile = "lambda-eve-karpenter.key"
-		}
-	}
-	if *token == "" && *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		fatalIf(err)
-		*token = strings.TrimSpace(string(data))
-	}
+	resolveToken(token, tokenFile)
 	return mustClientWith(*base, *token)
 }
 
@@ -425,6 +405,19 @@ func mustClientWith(baseURL, token string) *lambdaclient.Client {
 	return client
 }
 
+func resolveToken(token *string, tokenFile *string) {
+	if *token == "" && *tokenFile == "" {
+		if _, err := os.Stat("lambda-api.key"); err == nil {
+			*tokenFile = "lambda-api.key"
+		}
+	}
+	if *token == "" && *tokenFile != "" {
+		data, err := os.ReadFile(*tokenFile)
+		fatalIf(err)
+		*token = strings.TrimSpace(string(data))
+	}
+}
+
 func getenvOr(key, def string) string {
 	val := os.Getenv(key)
 	if val == "" {
@@ -436,6 +429,22 @@ func getenvOr(key, def string) string {
 func applyStringOverride(dst *string, val string) {
 	if val != "" {
 		*dst = val
+	}
+}
+
+func confirmAction(action string) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		fatalf("%s: refusing without --confirm (stdin is not a terminal)", action)
+	}
+	fmt.Fprintf(os.Stderr, "%s — proceed? [y/N] ", action)
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		fatalf("aborted")
+	}
+	resp := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	if resp != "y" && resp != "yes" {
+		fatalf("aborted")
 	}
 }
 

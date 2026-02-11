@@ -1,27 +1,166 @@
 # lambda-karpenter
 
-Karpenter provider for Lambda Cloud (MVP). See `spec.md` for requirements.
+Karpenter cloud provider for Lambda Cloud. Provisions and deprovisions Lambda Cloud
+GPU instances as Kubernetes nodes. Targets Karpenter v1.9.0.
 
-## Quick start
+## Overview
 
-1. Set env vars:
+Two binaries:
+
+- **`cmd/manager`** — Karpenter controller that runs in-cluster.
+- **`cmd/lambdactl`** — CLI for the full cluster lifecycle: launch a controller node,
+  extract kubeconfig, deploy the stack, manage users, and interact with the Lambda API.
+
+## Configuration
+
+All configuration is driven by environment variables. The project uses a two-file
+dotenv convention:
+
+| File | Purpose | Committed |
+|---|---|---|
+| `.env` | Project defaults (`VERSION`, `IMAGE_REPO`) | Yes |
+| `.env.local` | Personal overrides and secrets | No (gitignored) |
+
+Both files are loaded automatically by `lambdactl` (via godotenv) and by the
+`Taskfile.yml` (via task dotenv). Explicit environment variables always take
+precedence.
+
+Create your `.env.local`:
 
 ```bash
-export LAMBDA_API_TOKEN=...
-export PROVIDER_CLUSTER_NAME=...
+CLUSTER_NAME=my-cluster
+LAMBDA_API_TOKEN=your-token-here
+KUBECONFIG=./my-cluster.kubeconfig
 ```
 
-2. Run manager:
+## Getting started
+
+### 1. Bootstrap a controller node
+
+Launch a Lambda instance, install RKE2, and extract the kubeconfig — all in one
+command:
 
 ```bash
-go run ./cmd/manager
+lambdactl k8s bootstrap \
+  --region us-east-3 \
+  --instance-type gpu_1x_gh200 \
+  --image-family lambda-stack-24-04 \
+  --ssh-key my-key \
+  --cloud-init examples/bootstrap-controller-cloud-init.yaml \
+  --rke2-token <token> \
+  --cluster-name my-cluster \
+  --nodeclass-template examples/lambdanodeclass.yaml
 ```
 
-## Helm chart
+This will:
+1. Launch the instance and wait for it to become active
+2. SSH in and wait for RKE2 to generate `/etc/rancher/rke2/rke2.yaml`
+3. Download and rewrite the kubeconfig (server address, cluster name)
+4. Optionally render a LambdaNodeClass from a template
 
-Install the provider controller using the Helm chart. This chart also installs the Karpenter
-`NodeClaim` and `NodePool` CRDs. Do not install the AWS Karpenter controller chart.
-CRDs are shipped only in the Helm chart; there is no separate `config/crd` install path.
+### 2. Deploy the stack
+
+Install the GPU operator, lambda-karpenter Helm chart, and apply NodeClass + NodePool:
+
+```bash
+lambdactl k8s deploy \
+  --cluster-name my-cluster \
+  --nodeclass-file configs/lambdanodeclass.yaml \
+  --nodepool-file configs/nodepool.yaml
+```
+
+`--image-tag` defaults to `$VERSION` from `.env`. `--cluster-name` defaults to
+`$CLUSTER_NAME`. See `lambdactl k8s deploy -h` for all options.
+
+### 3. Verify
+
+```bash
+lambdactl k8s status
+lambdactl k8s nodeclaims
+```
+
+## lambdactl
+
+### Lambda API commands
+
+```
+list-instances [--limit N]
+get-instance --id <instance-id>
+list-instance-types
+list-images
+get-image --id <id> [--family <f>] [--region <r>] [--arch <a>] [--latest]
+launch [--config file.yaml] [--confirm] [flags]
+terminate --id <instance-id> [--confirm]
+```
+
+### Cluster lifecycle (`k8s`)
+
+```
+k8s bootstrap      Launch controller, install RKE2, extract kubeconfig
+k8s kubeconfig     Extract kubeconfig from existing remote RKE2 node
+k8s deploy         Install GPU operator + lambda-karpenter + apply resources
+```
+
+### User management (`k8s user`)
+
+```
+k8s user create    Create per-user ServiceAccount + token kubeconfig
+k8s user rotate    Rotate token in existing user kubeconfig
+k8s user cleanup   Delete user ServiceAccount + ClusterRoleBinding
+```
+
+### Resource management (`k8s`)
+
+```
+k8s apply          Server-side apply resources (--nodeclass, --nodepool, --pod)
+k8s delete         Delete resources (--nodeclass, --nodepool, --nodeclaim)
+k8s status         Show LambdaNodeClass, NodePool, NodeClaim status
+k8s nodeclaims     List NodeClaim details
+k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
+```
+
+### Common flags
+
+```
+--token <token>             Lambda API token (or LAMBDA_API_TOKEN env var)
+--token-file <path>         Read token from file (checks ./lambda-api.key as fallback)
+--base-url <url>            Lambda API base URL (or LAMBDA_API_BASE_URL)
+--kubeconfig <path>         Path to kubeconfig (or KUBECONFIG)
+```
+
+## Development
+
+### Taskfile
+
+[Task](https://taskfile.dev) is used for build automation. It reads `.env` and
+`.env.local` automatically.
+
+```bash
+task                    # build + test + vet
+task build              # multi-arch Docker image (push)
+task build-local        # local Docker image (no push)
+task test               # go test ./...
+task test-race          # go test -race ./...
+task vet                # go vet ./...
+task helm-template      # render Helm chart
+task run                # run controller locally (needs LAMBDA_API_TOKEN, CLUSTER_NAME)
+task set-version -- 0.4.0   # bump version everywhere
+```
+
+### Versioning
+
+The version is defined in `.env` (`VERSION=0.3.0`) and synced to the Helm chart
+by `task set-version`. This updates:
+
+- `.env` — `VERSION=`
+- `charts/lambda-karpenter/Chart.yaml` — `version` and `appVersion`
+- `charts/lambda-karpenter/values.yaml` — `image.tag`
+
+### Helm chart
+
+The chart is at `charts/lambda-karpenter/`. It ships the LambdaNodeClass CRD and
+upstream Karpenter CRDs in the Helm `crds/` directory (install-only, never deleted
+on uninstall). Do not install the AWS Karpenter controller chart.
 
 ```bash
 helm upgrade --install lambda-karpenter ./charts/lambda-karpenter \
@@ -31,17 +170,24 @@ helm upgrade --install lambda-karpenter ./charts/lambda-karpenter \
   --set config.apiTokenSecret.key=token
 ```
 
-Create the token secret:
+## Controller environment variables
 
-```bash
-kubectl -n karpenter create secret generic lambda-api \
-  --from-literal=token=<your-token>
-```
+These are set in the Helm chart values and consumed by `cmd/manager`:
 
-## GPU operator
+| Variable | Default | Description |
+|---|---|---|
+| `LAMBDA_API_TOKEN` | (required) | Lambda Cloud API token |
+| `PROVIDER_CLUSTER_NAME` | (required) | Cluster identifier used in instance tags |
+| `LAMBDA_API_BASE_URL` | `https://cloud.lambda.ai` | Lambda API base URL |
+| `LAMBDA_API_RPS` | `1` | Global API rate limit (requests/sec) |
+| `LAMBDA_LAUNCH_MIN_INTERVAL_SECONDS` | `5` | Minimum seconds between launches |
+| `INSTANCE_TYPE_CACHE_TTL` | `10m` | Instance type cache TTL |
+| `LOG_DEV_MODE` | `false` | Set `true` for human-readable logs |
 
-If you're running GPU workloads, install the NVIDIA GPU Operator with a toleration
-for Karpenter's unregistered taint so device plugins can start before the taint is removed.
+## GPU workloads
+
+Install the NVIDIA GPU Operator with tolerations for Karpenter's unregistered taint
+so device plugins start before the taint is removed:
 
 ```bash
 helm upgrade --install gpu-operator nvidia/gpu-operator \
@@ -50,121 +196,18 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   -f examples/gpu-operator-values.yaml
 ```
 
-## Bootstrap controller node
-
-If you want to launch a fresh controller node and bootstrap RKE2, use
-`examples/bootstrap-controller-cloud-init.yaml`. This config:
-
-- Installs and starts `rke2-server`
-- Sets `cni: flannel`
-
-Replace these placeholders before launch:
-
-- `REPLACE_WITH_RKE2_TOKEN`
-
-Helper script (launch + render cloud-init):
-
-```bash
-export RKE2_TOKEN=...
-export PUBLIC_ENDPOINT=... # optional; auto-resolved if unset
-export REGION=us-east-3
-export INSTANCE_TYPE=gpu_1x_gh200
-export IMAGE_FAMILY=lambda-stack-24-04
-export SSH_KEY_NAME=Eve
-export CLUSTER_NAME=gh200-test1
-export SSH_USER=ubuntu           # optional, default ubuntu
-export SSH_KEY_PATH=~/.ssh/id_rsa # optional, if not using ssh-agent
-export RKE2_SERVER_ADDR=...       # optional; private IP for agents (auto-detected if unset)
-export NODECLASS_OUT=./lambdanodeclass.generated.yaml
-
-./examples/bootstrap-controller.sh
-```
-
-The script waits for SSH, downloads `/etc/rancher/rke2/rke2.yaml`, and rewrites the
-API server address to use the public IP.
-
-It also generates a worker NodeClass with the correct `server` and `token` values at
-`$NODECLASS_OUT` (default `./lambdanodeclass.generated.yaml`).
-
-The previous no-SSH bootstrap flow has been archived under `archive/`.
-
-## Deploy to cluster
-
-Once you have a working kubeconfig, you can deploy the GPU operator and lambda-karpenter
-in one step:
-
-```bash
-export KUBECONFIG=./rke2.yaml
-export LAMBDA_API_TOKEN=...
-export CLUSTER_NAME=gh200-test1
-export IMAGE_TAG=0.1.9
-export NODECLASS_FILE_OVERRIDE=./lambdanodeclass.generated.yaml
-
-./examples/deploy.sh
-```
-
-## CLI (Lambda API validation)
-
-The `lambdactl` CLI is read-only by default and helps validate API connectivity before running Karpenter.
-
-```bash
-go run ./cmd/lambdactl list-instance-types
-```
-
-Optional flags:
-
-```bash
---token <token>
---token-file <path>
---base-url https://cloud.lambda.ai
-```
-
-Commands:
-
-```bash
-list-instances
-get-instance --id <instance-id>
-list-instance-types
-list-images
-get-image --id <image-id> [--region us-east-3] [--arch arm64] [--latest]
-launch --confirm [--config file.yaml] [flags]
-terminate --id <instance-id> --confirm
-k8s <command> [flags]
-```
-
-K8s subcommands:
-
-```bash
-k8s apply --nodeclass lambdanodeclass.yaml --nodepool nodepool.yaml
-k8s delete --nodeclass lambda-gh200 --nodepool gh200-pool
-k8s status
-k8s nodeclaims
-k8s wait --nodeclaim <name> --timeout 10m
-```
-
-Example `--config` file:
-
-```yaml
-name: test-node
-hostname: test-node
-region: us-west-1
-instanceType: gpu_1x_a10
-imageFamily: lambda-stack-24-04
-sshKeyNames:
-  - default
-tags:
-  environment: dev
-```
+The example NodePool applies an `nvidia.com/gpu:NoSchedule` taint. The GPU Operator
+tolerates this by default. GPU workload pods must include a matching toleration
+(see `examples/gpu-test-pod.yaml`).
 
 ## Notes
 
-- Nodes must join the cluster with a `provider-id` that matches the Lambda instance ID (e.g., `lambda://<id>`). The provided cloud-init config reads the instance ID from cloud-init metadata and strips dashes to match the API format.
-- Kubelet should set `node.kubernetes.io/instance-type` to the Lambda instance type (e.g., `gpu_1x_gh200`) to avoid drift.
-
-- This repository targets Karpenter v1.9.0.
-- Lambda tag keys are normalized to match Lambda's tag constraints. Keys like `karpenter.sh/nodeclaim` are converted to `karpenter-sh-nodeclaim`.
-- `lambdactl terminate` is intentionally disabled with an unconditional exit for safety.
-
-## Status
-
-Initial Karpenter CloudProvider implementation is included, but image resolution and advanced scheduling features are not yet implemented.
+- Worker nodes join the cluster with `provider-id=lambda://<instance-id>`. The
+  example cloud-init reads the instance ID from cloud-init metadata and strips
+  dashes to match the API format.
+- Lambda tag keys are normalized: `karpenter.sh/nodeclaim` becomes
+  `karpenter-sh-nodeclaim` (lowercase, max 55 chars, must start with a letter).
+- Lambda Cloud has no availability zones. The provider synthesizes a single zone
+  per region (`us-east-3` becomes `us-east-3a`).
+- Architecture is inferred from instance type name: `gh200` maps to `arm64`,
+  everything else to `amd64`.

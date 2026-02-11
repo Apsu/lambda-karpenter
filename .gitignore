@@ -1,3 +1,19 @@
+# Secrets
 *.key
-/tmp
+.env.local
+
+# Build artifacts
 bin/
+lambdactl
+
+# Generated / temporary
+/tmp
+*.generated.yaml
+rke2.yaml
+*.kubeconfig
+
+# User configs (copy from examples/ and customize)
+configs/
+
+# IDE / tooling
+.claude/

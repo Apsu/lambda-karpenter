@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -66,9 +68,11 @@ func getenvIntOr(key string, def int) int {
 	}
 	parsed, err := strconv.Atoi(val)
 	if err != nil {
+		log.Log.Info("ignoring invalid env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	if parsed <= 0 {
+		log.Log.Info("ignoring non-positive env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	return parsed
@@ -81,9 +85,11 @@ func getenvDurationSecondsOr(key string, def time.Duration) time.Duration {
 	}
 	parsed, err := strconv.Atoi(val)
 	if err != nil {
+		log.Log.Info("ignoring invalid env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	if parsed <= 0 {
+		log.Log.Info("ignoring non-positive env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	return time.Duration(parsed) * time.Second
@@ -96,9 +102,11 @@ func getenvDurationOr(key string, def time.Duration) time.Duration {
 	}
 	parsed, err := time.ParseDuration(val)
 	if err != nil {
+		log.Log.Info("ignoring invalid env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	if parsed <= 0 {
+		log.Log.Info("ignoring non-positive env var, using default", "key", key, "value", val, "default", def)
 		return def
 	}
 	return parsed

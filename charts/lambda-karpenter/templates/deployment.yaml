@@ -3,30 +3,57 @@ kind: Deployment
 metadata:
   name: {{ include "lambda-karpenter.fullname" . }}
   labels:
-    app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/version: {{ .Chart.AppVersion }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "lambda-karpenter.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "lambda-karpenter.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "lambda-karpenter.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "lambda-karpenter.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: manager
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
           env:
             - name: PROVIDER_CLUSTER_NAME
-              value: {{ .Values.config.clusterName | quote }}
+              value: {{ required "config.clusterName is required" .Values.config.clusterName | quote }}
             - name: LAMBDA_API_BASE_URL
               value: {{ .Values.config.apiBaseUrl | quote }}
             - name: LAMBDA_API_RPS
@@ -38,16 +65,10 @@ spec:
             - name: FEATURE_GATES
               value: {{ .Values.config.featureGates | quote }}
             - name: LAMBDA_API_TOKEN
-              {{- if .Values.config.apiToken }}
-              value: {{ .Values.config.apiToken | quote }}
-              {{- else if .Values.config.apiTokenSecret.name }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.config.apiTokenSecret.name | quote }}
+                  name: {{ required "config.apiTokenSecret.name is required" .Values.config.apiTokenSecret.name | quote }}
                   key: {{ .Values.config.apiTokenSecret.key | quote }}
-              {{- else }}
-              value: ""
-              {{- end }}
           {{- with .Values.extraEnv }}
           {{- toYaml . | nindent 12 }}
           {{- end }}
