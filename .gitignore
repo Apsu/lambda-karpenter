@@ -1,5 +1,6 @@
 # Secrets
 *.key
+.env.local
 
 # Build artifacts
 bin/

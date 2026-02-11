@@ -8,32 +8,33 @@ Karpenter cloud provider for Lambda Cloud. Provisions and deprovisions Lambda Cl
 
 ## Build & Run
 
+Build automation uses [Task](https://taskfile.dev) with `.env` / `.env.local` dotenv:
+
 ```bash
-# Build the controller manager
-go build -o bin/manager ./cmd/manager
+task                    # build + test + vet
+task build              # multi-arch Docker image (push)
+task build-local        # local Docker image (no push)
+task test               # go test ./...
+task test-race          # go test -race ./...
+task vet                # go vet ./...
+task helm-template      # render Helm chart
+task run                # run controller locally (needs LAMBDA_API_TOKEN, CLUSTER_NAME in .env.local)
+task set-version -- 0.4.0  # bump version everywhere
+```
 
-# Run the controller manager locally (requires env vars)
-LAMBDA_API_TOKEN=... PROVIDER_CLUSTER_NAME=... go run ./cmd/manager
+Or directly:
 
-# Run the CLI tool
-go run ./cmd/lambdactl list-instance-types
-
-# Run all tests
-go test ./...
-
-# Run tests for a specific package
+```bash
+go build ./...
 go test ./internal/provider/...
-go test ./internal/lambdaclient/...
-
-# Build Docker image
-docker build -t lambda-karpenter .
+go run ./cmd/lambdactl list-instance-types
 ```
 
 ## Architecture
 
 Two binaries:
 - **`cmd/manager`** — Karpenter controller-manager (production). Creates the Lambda API client, rate limiter, instance type cache, instance list cache, and CloudProvider, then starts the Karpenter operator with all standard controllers.
-- **`cmd/lambdactl`** — Read-only CLI for API validation and K8s resource management. Uses server-side apply for `k8s apply`.
+- **`cmd/lambdactl`** — CLI for the full cluster lifecycle: bootstrap controller nodes, extract kubeconfig, deploy the stack, manage per-user credentials, and interact with the Lambda API. Loads `.env` + `.env.local` via godotenv at startup. Uses server-side apply for `k8s apply`.
 
 ### Core packages (`internal/`)
 
@@ -57,7 +58,7 @@ Two binaries:
 - **Provider ID format**: `lambda://<instance-id>` with fallback resolution by hostname/name.
 - **Tag-based idempotency**: Instances tagged with `karpenter-sh-nodeclaim`, `karpenter-sh-nodepool`, `karpenter-sh-cluster`. On Create, existing instances are checked by tag before launching new ones.
 - **Tag key sanitization**: Lambda tag keys are normalized (lowercase, `/._` replaced with `-`, max 55 chars, must start with letter). E.g., `karpenter.sh/nodeclaim` → `karpenter-sh-nodeclaim`.
-- **Instance status mapping**: `terminated`/`preempted`/`unhealthy`/`terminating` are terminal states.
+- **Instance status filtering**: `isGoneInstance` (terminated/preempted) for Delete/Get paths; `isNonViableInstance` (+ unhealthy/terminating) for Create idempotency and List filtering.
 - **Instance list caching**: All `ListInstances` calls go through `InstanceListCache` (5s TTL + singleflight) to avoid O(n) list calls per reconciliation.
 
 ### Helm chart

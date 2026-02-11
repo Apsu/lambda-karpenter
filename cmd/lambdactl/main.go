@@ -12,6 +12,7 @@ import (
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
 	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
+	"github.com/joho/godotenv"
 	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 )
@@ -19,6 +20,10 @@ import (
 const defaultBaseURL = "https://cloud.lambda.ai"
 
 func main() {
+	// Load .env (project defaults) then .env.local (personal overrides).
+	// Existing env vars are never overwritten. Missing files are silently skipped.
+	_ = godotenv.Load(".env", ".env.local")
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)

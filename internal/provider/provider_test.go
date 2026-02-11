@@ -38,6 +38,7 @@ type fakeLambda struct {
 	launchIDs     []string
 	launchErr     error
 	terminated    []string
+	terminateErr  error
 	getErr        error
 }
 
@@ -73,6 +74,9 @@ func (f *fakeLambda) LaunchInstance(ctx context.Context, req lambdaclient.Launch
 
 func (f *fakeLambda) TerminateInstance(ctx context.Context, id string) error {
 	f.terminated = append(f.terminated, id)
+	if f.terminateErr != nil {
+		return f.terminateErr
+	}
 	return nil
 }
 
@@ -817,5 +821,630 @@ func TestProviderNodeClaimFromInstanceZeroSpecs(t *testing.T) {
 	}
 	if _, ok := nc.Status.Capacity[corev1.ResourceEphemeralStorage]; ok {
 		t.Fatal("expected no ephemeral storage for zero-storage specs")
+	}
+}
+
+// --- GetInstanceTypes / instanceTypeFromItem ---
+
+func TestProviderInstanceTypeFromItem(t *testing.T) {
+	p := &Provider{}
+
+	item := lambdaclient.InstanceTypesItem{
+		InstanceType: lambdaclient.InstanceTypeRef{
+			Name:       "gpu_1x_gh200",
+			PriceCents: 199,
+			Specs:      gh200Specs,
+		},
+		Regions: []lambdaclient.Region{
+			{Name: "us-east-3"},
+			{Name: "us-west-1"},
+		},
+	}
+
+	it := p.instanceTypeFromItem("gpu_1x_gh200", item)
+
+	if it.Name != "gpu_1x_gh200" {
+		t.Fatalf("expected name gpu_1x_gh200, got %s", it.Name)
+	}
+
+	// Architecture: gh200 → arm64
+	archReq := it.Requirements.Get(corev1.LabelArchStable)
+	if !archReq.Has("arm64") {
+		t.Fatalf("expected arm64 for gh200, got %v", archReq)
+	}
+
+	// OS: linux
+	osReq := it.Requirements.Get(corev1.LabelOSStable)
+	if !osReq.Has("linux") {
+		t.Fatalf("expected linux OS, got %v", osReq)
+	}
+
+	// Instance type label
+	itReq := it.Requirements.Get(corev1.LabelInstanceTypeStable)
+	if !itReq.Has("gpu_1x_gh200") {
+		t.Fatalf("expected instance type label, got %v", itReq)
+	}
+
+	// Offerings: one per region, each on-demand with synthetic zone
+	if len(it.Offerings) != 2 {
+		t.Fatalf("expected 2 offerings (one per region), got %d", len(it.Offerings))
+	}
+	for _, off := range it.Offerings {
+		zoneReq := off.Requirements.Get(corev1.LabelTopologyZone)
+		regionReq := off.Requirements.Get(corev1.LabelTopologyRegion)
+		capReq := off.Requirements.Get(v1.CapacityTypeLabelKey)
+		if !capReq.Has(v1.CapacityTypeOnDemand) {
+			t.Fatalf("expected on-demand capacity, got %v", capReq)
+		}
+		// Zone should be region + "a"
+		region := regionReq.Values()[0]
+		zone := zoneReq.Values()[0]
+		if zone != region+"a" {
+			t.Fatalf("expected zone %sa, got %s", region, zone)
+		}
+		if !off.Available {
+			t.Fatal("expected offering to be available")
+		}
+		// Price: 199 cents → $1.99
+		if off.Price != 1.99 {
+			t.Fatalf("expected price 1.99, got %f", off.Price)
+		}
+	}
+
+	// Capacity
+	cpu := it.Capacity[corev1.ResourceCPU]
+	if cpu.Value() != 72 {
+		t.Fatalf("expected 72 CPUs, got %d", cpu.Value())
+	}
+	gpu := it.Capacity[corev1.ResourceName("nvidia.com/gpu")]
+	if gpu.Value() != 1 {
+		t.Fatalf("expected 1 GPU, got %d", gpu.Value())
+	}
+}
+
+func TestProviderInstanceTypeFromItemAmd64(t *testing.T) {
+	p := &Provider{}
+
+	item := lambdaclient.InstanceTypesItem{
+		InstanceType: lambdaclient.InstanceTypeRef{
+			Name:       "gpu_1x_a100",
+			PriceCents: 110,
+			Specs: lambdaclient.InstanceTypeSpec{
+				VCPUs: 30, MemoryGiB: 200, GPUs: 1,
+			},
+		},
+		Regions: []lambdaclient.Region{{Name: "us-east-1"}},
+	}
+
+	it := p.instanceTypeFromItem("gpu_1x_a100", item)
+
+	// Non-GH200 → amd64
+	archReq := it.Requirements.Get(corev1.LabelArchStable)
+	if !archReq.Has("amd64") {
+		t.Fatalf("expected amd64 for a100, got %v", archReq)
+	}
+	if archReq.Has("arm64") {
+		t.Fatal("a100 should not be arm64")
+	}
+}
+
+func TestProviderInstanceTypeFromItemNoRegions(t *testing.T) {
+	p := &Provider{}
+
+	item := lambdaclient.InstanceTypesItem{
+		InstanceType: lambdaclient.InstanceTypeRef{
+			Name:       "gpu_1x_h100",
+			PriceCents: 250,
+			Specs: lambdaclient.InstanceTypeSpec{
+				VCPUs: 26, MemoryGiB: 200, GPUs: 1,
+			},
+		},
+		Regions: nil, // no regions with capacity
+	}
+
+	it := p.instanceTypeFromItem("gpu_1x_h100", item)
+
+	// Should still have 1 offering with "unknown" region, marked unavailable.
+	if len(it.Offerings) != 1 {
+		t.Fatalf("expected 1 fallback offering, got %d", len(it.Offerings))
+	}
+	if it.Offerings[0].Available {
+		t.Fatal("expected fallback offering to be unavailable")
+	}
+	zoneReq := it.Offerings[0].Requirements.Get(corev1.LabelTopologyZone)
+	if !zoneReq.Has("unknowna") {
+		t.Fatalf("expected zone unknowna, got %v", zoneReq)
+	}
+}
+
+// --- Get happy path + list fallback ---
+
+func TestProviderGetHappyPath(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	fakeAPI := &fakeLambda{
+		instances: map[string]lambdaclient.Instance{
+			"i-123": {
+				ID:     "i-123",
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs},
+				Region: lambdaclient.Region{Name: "us-east-3"},
+				Tags: []lambdaclient.TagEntry{
+					{Key: "karpenter-lambda-cloud-image-id", Value: "my-image"},
+				},
+			},
+		},
+	}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc, err := p.Get(context.Background(), "lambda://i-123")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if nc.Status.ProviderID != "lambda://i-123" {
+		t.Fatalf("expected providerID lambda://i-123, got %s", nc.Status.ProviderID)
+	}
+	if nc.Labels[corev1.LabelInstanceTypeStable] != "gpu_1x_gh200" {
+		t.Fatalf("expected instance type label, got %s", nc.Labels[corev1.LabelInstanceTypeStable])
+	}
+	if nc.Status.ImageID != "my-image" {
+		t.Fatalf("expected ImageID my-image, got %q", nc.Status.ImageID)
+	}
+	if nc.Status.Allocatable == nil {
+		t.Fatal("expected Allocatable")
+	}
+}
+
+func TestProviderGetFallbackToList(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	// GetInstance fails for hostname-based providerID, but list finds it.
+	fakeAPI := &fakeLambda{
+		listInstances: []lambdaclient.Instance{
+			{ID: "i-real", Hostname: "my-node", Status: "active",
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs},
+				Region: lambdaclient.Region{Name: "us-east-3"}},
+		},
+	}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc, err := p.Get(context.Background(), "lambda://my-node")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if nc.Status.ProviderID != "lambda://i-real" {
+		t.Fatalf("expected providerID lambda://i-real, got %s", nc.Status.ProviderID)
+	}
+}
+
+// --- List happy path ---
+
+func TestProviderListHappyPath(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	fakeAPI := &fakeLambda{
+		listInstances: []lambdaclient.Instance{
+			{
+				ID: "i-1", Status: "active",
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs},
+				Region: lambdaclient.Region{Name: "us-east-3"},
+				Tags: []lambdaclient.TagEntry{
+					{Key: "karpenter-sh-cluster", Value: "test"},
+					{Key: "karpenter-sh-nodepool", Value: "pool-a"},
+					{Key: "karpenter-lambda-cloud-lambdanodeclass", Value: "nc-1"},
+					{Key: "karpenter-lambda-cloud-image-id", Value: "img-1"},
+				},
+			},
+			{
+				ID: "i-2", Status: "booting",
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, GPUs: 1}},
+				Region: lambdaclient.Region{Name: "us-west-1"},
+				Tags: []lambdaclient.TagEntry{
+					{Key: "karpenter-sh-cluster", Value: "test"},
+					{Key: "karpenter-sh-nodepool", Value: "pool-b"},
+				},
+			},
+		},
+	}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	items, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+
+	// Find each by providerID (map order isn't guaranteed from list).
+	byID := map[string]*v1.NodeClaim{}
+	for _, nc := range items {
+		byID[nc.Status.ProviderID] = nc
+	}
+
+	nc1 := byID["lambda://i-1"]
+	if nc1 == nil {
+		t.Fatal("missing i-1")
+	}
+	if nc1.Labels[v1.NodePoolLabelKey] != "pool-a" {
+		t.Fatalf("expected nodepool label pool-a, got %q", nc1.Labels[v1.NodePoolLabelKey])
+	}
+	ncLabelKey := v1.NodeClassLabelKey(schema.GroupKind{Group: v1alpha1.Group, Kind: "LambdaNodeClass"})
+	if nc1.Labels[ncLabelKey] != "nc-1" {
+		t.Fatalf("expected nodeclass label nc-1, got %q", nc1.Labels[ncLabelKey])
+	}
+	if nc1.Labels[v1.CapacityTypeLabelKey] != v1.CapacityTypeOnDemand {
+		t.Fatalf("expected on-demand, got %q", nc1.Labels[v1.CapacityTypeLabelKey])
+	}
+	if nc1.Status.ImageID != "img-1" {
+		t.Fatalf("expected ImageID img-1, got %q", nc1.Status.ImageID)
+	}
+	if nc1.Status.Allocatable == nil {
+		t.Fatal("expected Allocatable on list item")
+	}
+
+	nc2 := byID["lambda://i-2"]
+	if nc2 == nil {
+		t.Fatal("missing i-2")
+	}
+	if nc2.Labels[corev1.LabelTopologyRegion] != "us-west-1" {
+		t.Fatalf("expected region us-west-1, got %q", nc2.Labels[corev1.LabelTopologyRegion])
+	}
+	if nc2.Labels[v1.NodePoolLabelKey] != "pool-b" {
+		t.Fatalf("expected nodepool label pool-b, got %q", nc2.Labels[v1.NodePoolLabelKey])
+	}
+}
+
+// --- Delete API error ---
+
+func TestProviderDeleteAPIError(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	fakeAPI := &fakeLambda{
+		instances: map[string]lambdaclient.Instance{
+			"i-1": {ID: "i-1", Status: "active"},
+		},
+	}
+	// Override TerminateInstance to return an error.
+	terminateErr := fmt.Errorf("lambda api DELETE failed: 500: internal error")
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc := &v1.NodeClaim{
+		Status: v1.NodeClaimStatus{ProviderID: "lambda://i-1"},
+	}
+
+	// We need to make TerminateInstance fail. The current fake always succeeds.
+	// Add terminateErr support to fakeLambda.
+	fakeAPI.terminateErr = terminateErr
+	err := p.Delete(context.Background(), nc)
+	if err == nil {
+		t.Fatal("expected error from TerminateInstance")
+	}
+	if err.Error() != terminateErr.Error() {
+		t.Fatalf("expected %q, got %q", terminateErr, err)
+	}
+	// Should NOT be NodeClaimNotFoundError.
+	if cloudprovider.IsNodeClaimNotFoundError(err) {
+		t.Fatal("TerminateInstance error should not be NodeClaimNotFoundError")
+	}
+}
+
+// --- Create validation ---
+
+func TestProviderCreateMissingNodeClassRef(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	fakeAPI := &fakeLambda{}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec:       v1.NodeClaimSpec{}, // no NodeClassRef
+	}
+	_, err := p.Create(context.Background(), nc)
+	if err == nil {
+		t.Fatal("expected error for missing nodeClassRef")
+	}
+	if !strings.Contains(err.Error(), "nodeClassRef") {
+		t.Fatalf("expected nodeClassRef error, got: %v", err)
+	}
+}
+
+func TestProviderCreateWrongGVK(t *testing.T) {
+	class, nodePool, scheme := testSchemeAndClass(t)
+	client := fake.NewClientBuilder().WithScheme(&scheme).WithObjects(class, nodePool).Build()
+	fakeAPI := &fakeLambda{}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "test",
+			Labels: map[string]string{v1.NodePoolLabelKey: "gh200-pool"},
+		},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: "wrong.group",
+				Kind:  "WrongKind",
+				Name:  "lambda-gh200",
+			},
+		},
+	}
+	_, err := p.Create(context.Background(), nc)
+	if err == nil {
+		t.Fatal("expected error for wrong GVK")
+	}
+	if !strings.Contains(err.Error(), "unsupported nodeclass") {
+		t.Fatalf("expected 'unsupported nodeclass' error, got: %v", err)
+	}
+}
+
+func TestProviderCreateNoSSHKeys(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-gh200"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  nil, // no SSH keys
+		},
+	}
+	nodePool := &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "gh200-pool"}}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class, nodePool).Build()
+	fakeAPI := &fakeLambda{}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	_, err := p.Create(context.Background(), testNodeClaim())
+	if err == nil {
+		t.Fatal("expected error for no SSH keys")
+	}
+	if !strings.Contains(err.Error(), "sshKeyNames") {
+		t.Fatalf("expected sshKeyNames error, got: %v", err)
+	}
+}
+
+// --- buildLaunchRequest ---
+
+func TestProviderBuildLaunchRequestFullSpec(t *testing.T) {
+	p := &Provider{clusterName: "my-cluster"}
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-gh200"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:             "us-east-3",
+			InstanceType:       "gpu_1x_gh200",
+			SSHKeyNames:        []string{"key1", "key2"},
+			UserData:           "#cloud-config\npackages: [vim]",
+			FirewallRulesetIDs: []string{"fw-aaa", "fw-bbb"},
+			Tags:               map[string]string{"team": "infra", "env": "staging"},
+			Pool:               "reserved-pool",
+			Image:              &v1alpha1.LambdaImage{ID: "img-123"},
+		},
+	}
+	boolTrue := true
+	class.Spec.PublicIP = &boolTrue
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-node-abc",
+			Labels: map[string]string{
+				v1.NodePoolLabelKey: "my-pool",
+				v1.NodeClassLabelKey(schema.GroupKind{Group: v1alpha1.Group, Kind: "LambdaNodeClass"}): "lambda-gh200",
+			},
+		},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  "lambda-gh200",
+			},
+		},
+	}
+
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+
+	// Basic fields
+	if req.RegionName != "us-east-3" {
+		t.Fatalf("expected region us-east-3, got %s", req.RegionName)
+	}
+	if req.InstanceTypeName != "gpu_1x_gh200" {
+		t.Fatalf("expected instanceType gpu_1x_gh200, got %s", req.InstanceTypeName)
+	}
+	if req.UserData != "#cloud-config\npackages: [vim]" {
+		t.Fatalf("unexpected userData: %s", req.UserData)
+	}
+	if len(req.SSHKeyNames) != 2 || req.SSHKeyNames[0] != "key1" {
+		t.Fatalf("unexpected SSHKeyNames: %v", req.SSHKeyNames)
+	}
+	if req.Pool != "reserved-pool" {
+		t.Fatalf("expected pool reserved-pool, got %s", req.Pool)
+	}
+	if req.PublicIP == nil || *req.PublicIP != true {
+		t.Fatal("expected PublicIP=true")
+	}
+
+	// Image
+	if req.Image == nil || req.Image.ID != "img-123" {
+		t.Fatalf("expected image ID img-123, got %v", req.Image)
+	}
+
+	// Firewall rulesets
+	if len(req.FirewallRulesets) != 2 {
+		t.Fatalf("expected 2 firewall rulesets, got %d", len(req.FirewallRulesets))
+	}
+	if req.FirewallRulesets[0].ID != "fw-aaa" || req.FirewallRulesets[1].ID != "fw-bbb" {
+		t.Fatalf("unexpected firewall rulesets: %v", req.FirewallRulesets)
+	}
+
+	// Tags: should include custom tags + system tags + image tag
+	tagMap := map[string]string{}
+	for _, tag := range req.Tags {
+		tagMap[tag.Key] = tag.Value
+	}
+	if tagMap["team"] != "infra" {
+		t.Fatalf("expected custom tag team=infra, got %q", tagMap["team"])
+	}
+	if tagMap["env"] != "staging" {
+		t.Fatalf("expected custom tag env=staging, got %q", tagMap["env"])
+	}
+	if tagMap[tagCluster] != "my-cluster" {
+		t.Fatalf("expected cluster tag, got %q", tagMap[tagCluster])
+	}
+	if tagMap[tagNodeClaim] != "my-node-abc" {
+		t.Fatalf("expected nodeclaim tag, got %q", tagMap[tagNodeClaim])
+	}
+	if tagMap[tagNodePool] != "my-pool" {
+		t.Fatalf("expected nodepool tag, got %q", tagMap[tagNodePool])
+	}
+	if tagMap[tagImageID] != "img-123" {
+		t.Fatalf("expected image tag img-123, got %q", tagMap[tagImageID])
+	}
+}
+
+func TestProviderBuildLaunchRequestImageFamily(t *testing.T) {
+	p := &Provider{clusterName: "test"}
+
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"key"},
+			Image:        &v1alpha1.LambdaImage{Family: "ubuntu-22-04"},
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+		},
+	}
+
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+
+	if req.Image == nil || req.Image.Family != "ubuntu-22-04" {
+		t.Fatalf("expected image family ubuntu-22-04, got %v", req.Image)
+	}
+
+	// Image tag should be family when ID is empty.
+	tagMap := map[string]string{}
+	for _, tag := range req.Tags {
+		tagMap[tag.Key] = tag.Value
+	}
+	if tagMap[tagImageID] != "ubuntu-22-04" {
+		t.Fatalf("expected image tag ubuntu-22-04, got %q", tagMap[tagImageID])
+	}
+}
+
+func TestProviderBuildLaunchRequestMissingRegion(t *testing.T) {
+	p := &Provider{}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{InstanceType: "gpu_1x_gh200"},
+	}
+	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	_, err := p.buildLaunchRequest(nc, class)
+	if err == nil || !strings.Contains(err.Error(), "region") {
+		t.Fatalf("expected region error, got: %v", err)
+	}
+}
+
+func TestProviderBuildLaunchRequestMissingInstanceType(t *testing.T) {
+	p := &Provider{}
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{Region: "us-east-3"},
+	}
+	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	_, err := p.buildLaunchRequest(nc, class)
+	if err == nil || !strings.Contains(err.Error(), "instanceType") {
+		t.Fatalf("expected instanceType error, got: %v", err)
+	}
+}
+
+// --- sanitizeHostname ---
+
+func TestSanitizeHostname(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"normal", "my-node-123", "my-node-123"},
+		{"empty", "", "lambda-node"},
+		{"special chars", "my_node.foo/bar", "my-node-foo-bar"},
+		{"leading trailing dashes", "--my-node--", "my-node"},
+		{"all special", "___", "lambda-node"},
+		{"uppercase", "MY-NODE", "my-node"},
+		{"long name", strings.Repeat("a", 100), strings.Repeat("a", 63)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeHostname(tt.in)
+			if got != tt.want {
+				t.Fatalf("sanitizeHostname(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- sanitizeTagKey ---
+
+func TestSanitizeTagKey(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"normal", "my-tag", "my-tag"},
+		{"karpenter style", "karpenter.sh/nodeclaim", "karpenter-sh-nodeclaim"},
+		{"dots and underscores", "foo_bar.baz", "foo-bar-baz"},
+		{"starts with number", "123abc", "k-123abc"},
+		{"empty after sanitize", "", ""},
+		{"uppercase", "MY_TAG", "my-tag"},
+		{"long key", strings.Repeat("a", 100), strings.Repeat("a", 55)},
+		{"preserves colon", "key:value", "key:value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeTagKey(tt.in)
+			if got != tt.want {
+				t.Fatalf("sanitizeTagKey(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- IsDrifted error path ---
+
+func TestProviderIsDriftedNodeClassNotFound(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	// No nodeclass in the fake client.
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeAPI := &fakeLambda{}
+	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+
+	nc := &v1.NodeClaim{
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  "nonexistent",
+			},
+		},
+	}
+	_, err := p.IsDrifted(context.Background(), nc)
+	if err == nil {
+		t.Fatal("expected error for missing nodeclass")
 	}
 }

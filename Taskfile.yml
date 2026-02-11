@@ -1,0 +1,85 @@
+version: "3"
+
+dotenv: [".env", ".env.local"]
+
+vars:
+  IMAGE: "{{.IMAGE_REPO}}:{{.VERSION}}"
+  PLATFORMS: '{{.PLATFORMS | default "linux/amd64,linux/arm64"}}'
+
+tasks:
+  default:
+    desc: Build, test, vet
+    cmds:
+      - task: build-go
+      - task: test
+      - task: vet
+
+  build-go:
+    desc: Compile all Go packages
+    cmds:
+      - go build ./...
+
+  build:
+    desc: Build and push multi-arch Docker image
+    cmds:
+      - echo "Building {{.IMAGE}} for {{.PLATFORMS}}"
+      - docker buildx build --platform "{{.PLATFORMS}}" --tag "{{.IMAGE}}" --push .
+      - echo "Pushed {{.IMAGE}}"
+
+  build-local:
+    desc: Build Docker image for local arch only (no push)
+    cmds:
+      - docker build -t "{{.IMAGE}}" .
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test-race:
+    desc: Run all tests with race detector
+    cmds:
+      - go test -race ./...
+
+  test-v:
+    desc: Run all tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  run:
+    desc: Run the controller manager locally
+    requires:
+      vars: [LAMBDA_API_TOKEN, CLUSTER_NAME]
+    env:
+      PROVIDER_CLUSTER_NAME: "{{.CLUSTER_NAME}}"
+    cmds:
+      - go run ./cmd/manager
+
+  helm-template:
+    desc: Render Helm chart (smoke test)
+    cmds:
+      - >-
+        helm template test charts/lambda-karpenter
+        --set config.clusterName={{.CLUSTER_NAME | default "test"}}
+        --set config.apiTokenSecret.name={{.API_TOKEN_SECRET | default "test-secret"}}
+
+  set-version:
+    desc: "Set version across all files (usage: task set-version -- 0.4.0)"
+    cmds:
+      - |
+        VERSION="{{.CLI_ARGS}}"
+        if [ -z "${VERSION}" ]; then
+          echo "usage: task set-version -- <version>" >&2
+          exit 2
+        fi
+        echo "Setting version to ${VERSION}"
+        sed -i '' "s/^VERSION=.*/VERSION=${VERSION}/" .env
+        sed -i '' "s/^version: .*/version: ${VERSION}/" charts/lambda-karpenter/Chart.yaml
+        sed -i '' "s/^appVersion: .*/appVersion: \"${VERSION}\"/" charts/lambda-karpenter/Chart.yaml
+        sed -i '' "s/^  tag: .*/  tag: \"${VERSION}\"/" charts/lambda-karpenter/values.yaml
+        echo "Updated .env, Chart.yaml, values.yaml"
