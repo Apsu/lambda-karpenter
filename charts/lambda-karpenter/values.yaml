@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: apsu/lambda-karpenter
-  tag: "0.3.0"
+  tag: "v0.3.1"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -24,7 +24,10 @@ resources: {}
 
 nodeSelector: {}
 
-tolerations: []
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
 
 affinity: {}
 
@@ -40,3 +43,38 @@ config:
   featureGates: "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false"
 
 extraEnv: []
+
+# Cluster join configuration (used by default user-data templates).
+cluster:
+  type: ""             # "kubeadm" or "rke2" — selects the built-in user-data template
+  controllerIP: ""     # Internal IP of controller node
+  joinToken: ""        # Cluster join token
+
+# Lambda API token Secret. Set create=true to have the chart manage the Secret.
+secret:
+  create: false
+  token: ""
+
+# LambdaNodeClass. Set enabled=true to create a LambdaNodeClass via the chart.
+nodeClass:
+  enabled: false
+  name: "default"
+  region: ""
+  instanceType: ""
+  image:
+    family: ""
+  sshKeyNames: []
+  tags: {}
+  userData: ""         # Override built-in user-data (empty = use cluster.type template)
+
+# NodePool. Set enabled=true to create a NodePool via the chart.
+nodePool:
+  enabled: false
+  name: "default"
+  instanceTypes: []    # e.g. ["gpu_1x_gh200"]
+  architecture: ""     # e.g. "arm64"
+  limits:
+    nodes: 1
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 60m

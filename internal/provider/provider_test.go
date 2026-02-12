@@ -131,7 +131,7 @@ func TestProviderCreateLaunchRequest(t *testing.T) {
 		launchIDs: []string{"i-1"},
 	}
 
-	p := New(client, fakeAPI, fakeAPI, nil, "gh200-test1", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "gh200-test1", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -242,7 +242,7 @@ func TestProviderCreateLaunchRequest_NoLimit(t *testing.T) {
 		launchIDs: []string{"i-1"},
 	}
 
-	p := New(client, fakeAPI, fakeAPI, nil, "gh200-test1", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "gh200-test1", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -273,7 +273,7 @@ func TestProviderListFiltersCluster(t *testing.T) {
 			{ID: "i-2", Tags: []lambdaclient.TagEntry{{Key: "karpenter-sh-cluster", Value: "other"}}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "gh200-test1", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "gh200-test1", testLog)
 	items, err := p.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -291,7 +291,7 @@ func TestProviderResolveInstanceByHostnameProviderID(t *testing.T) {
 			{ID: "i-2", Hostname: "gh200-pool-xyz"},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "gh200-test1", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "gh200-test1", testLog)
 
 	nc := &v1.NodeClaim{
 		Status: v1.NodeClaimStatus{
@@ -350,7 +350,7 @@ func TestProviderIsDrifted(t *testing.T) {
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	// Not drifted
 	nc := &v1.NodeClaim{
@@ -434,7 +434,7 @@ func TestProviderRepairPolicies(t *testing.T) {
 func TestProviderDeleteNotFound(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "missing"},
@@ -458,7 +458,7 @@ func TestProviderDeleteTerminatedInstance(t *testing.T) {
 			}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "dead"},
@@ -482,7 +482,7 @@ func TestProviderDeleteTerminatingInstance(t *testing.T) {
 			}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "dying"}}
 	err := p.Delete(context.Background(), nc)
@@ -505,7 +505,7 @@ func TestProviderDeleteUnhealthyInstance(t *testing.T) {
 			}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "sick"}}
 	err := p.Delete(context.Background(), nc)
@@ -521,7 +521,7 @@ func TestProviderDeleteUnhealthyInstance(t *testing.T) {
 func TestProviderGetInvalidProviderID(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Get(context.Background(), "")
 	if err == nil {
@@ -532,7 +532,7 @@ func TestProviderGetInvalidProviderID(t *testing.T) {
 func TestProviderGetNotFound(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Get(context.Background(), "lambda://i-nonexistent")
 	if err == nil {
@@ -550,7 +550,7 @@ func TestProviderGetTransientError(t *testing.T) {
 		getErr:  fmt.Errorf("lambda api GET failed: 500: internal server error"),
 		listErr: fmt.Errorf("lambda api GET failed: 500: internal server error"),
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Get(context.Background(), "lambda://i-123")
 	if err == nil {
@@ -573,7 +573,7 @@ func TestProviderListFiltersTerminalInstances(t *testing.T) {
 			{ID: "i-terminating", Status: "terminating", Tags: []lambdaclient.TagEntry{{Key: "karpenter-sh-cluster", Value: "test"}}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	items, err := p.List(context.Background())
 	if err != nil {
@@ -662,7 +662,7 @@ func TestProviderCreateCapacityError(t *testing.T) {
 	fakeAPI := &fakeLambda{
 		launchErr: fmt.Errorf("lambda api POST /api/v1/instance-operations/launch failed: 503: insufficient capacity"),
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Create(context.Background(), testNodeClaim())
 	if err == nil {
@@ -680,7 +680,7 @@ func TestProviderCreateNonCapacityError(t *testing.T) {
 	fakeAPI := &fakeLambda{
 		launchErr: fmt.Errorf("lambda api POST /api/v1/instance-operations/launch failed: 400: invalid ssh key"),
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Create(context.Background(), testNodeClaim())
 	if err == nil {
@@ -697,7 +697,7 @@ func TestProviderCreateEmptyIDs(t *testing.T) {
 	fakeAPI := &fakeLambda{
 		launchIDs: []string{}, // API returns success but no IDs
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Create(context.Background(), testNodeClaim())
 	if err == nil {
@@ -715,7 +715,7 @@ func TestProviderCreateGetInstanceFailure(t *testing.T) {
 		launchIDs: []string{"i-1"},
 		// instances map is empty — GetInstance will return 404 for i-1
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Create(context.Background(), testNodeClaim())
 	if err == nil {
@@ -746,7 +746,7 @@ func TestProviderCreateIdempotentByTag(t *testing.T) {
 			},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	got, err := p.Create(context.Background(), testNodeClaim())
 	if err != nil {
@@ -981,7 +981,7 @@ func TestProviderGetHappyPath(t *testing.T) {
 			},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc, err := p.Get(context.Background(), "lambda://i-123")
 	if err != nil {
@@ -1011,7 +1011,7 @@ func TestProviderGetFallbackToList(t *testing.T) {
 				Region: lambdaclient.Region{Name: "us-east-3"}},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc, err := p.Get(context.Background(), "lambda://my-node")
 	if err != nil {
@@ -1050,7 +1050,7 @@ func TestProviderListHappyPath(t *testing.T) {
 			},
 		},
 	}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	items, err := p.List(context.Background())
 	if err != nil {
@@ -1110,7 +1110,7 @@ func TestProviderDeleteAPIError(t *testing.T) {
 	}
 	// Override TerminateInstance to return an error.
 	terminateErr := fmt.Errorf("lambda api DELETE failed: 500: internal error")
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		Status: v1.NodeClaimStatus{ProviderID: "lambda://i-1"},
@@ -1137,7 +1137,7 @@ func TestProviderDeleteAPIError(t *testing.T) {
 func TestProviderCreateMissingNodeClassRef(t *testing.T) {
 	client := fake.NewClientBuilder().Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "test"},
@@ -1156,7 +1156,7 @@ func TestProviderCreateWrongGVK(t *testing.T) {
 	class, nodePool, scheme := testSchemeAndClass(t)
 	client := fake.NewClientBuilder().WithScheme(&scheme).WithObjects(class, nodePool).Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1200,7 +1200,7 @@ func TestProviderCreateNoSSHKeys(t *testing.T) {
 	nodePool := &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "gh200-pool"}}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class, nodePool).Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	_, err := p.Create(context.Background(), testNodeClaim())
 	if err == nil {
@@ -1572,7 +1572,7 @@ func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
 			Region:       "us-east-3",
 			InstanceType: "gpu_1x_gh200",
 			SSHKeyNames:  []string{"key"},
-			UserData:     "instance-type={{.InstanceType}} region={{.Region}}",
+			UserData:     "region={{.Region}} cluster={{.ClusterName}}",
 		},
 	}
 	nc := &v1.NodeClaim{
@@ -1585,7 +1585,7 @@ func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
-	if req.UserData != "instance-type=gpu_1x_gh200 region=us-east-3" {
+	if req.UserData != "region=us-east-3 cluster=my-cluster" {
 		t.Fatalf("expected rendered userData, got: %s", req.UserData)
 	}
 }
@@ -1616,7 +1616,7 @@ func TestGetInstanceTypesFilteredByNodeClass(t *testing.T) {
 		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
 	})
 
-	p := New(client, nil, nil, cache, "test", testLog)
+	p := New(client, nil, nil, cache, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nodePool := &v1.NodePool{
 		Spec: v1.NodePoolSpec{
@@ -1668,7 +1668,7 @@ func TestGetInstanceTypesUnfiltered(t *testing.T) {
 		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
 	})
 
-	p := New(client, nil, nil, cache, "test", testLog)
+	p := New(client, nil, nil, cache, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nodePool := &v1.NodePool{
 		Spec: v1.NodePoolSpec{
@@ -1707,7 +1707,7 @@ func TestProviderIsDriftedNodeClassNotFound(t *testing.T) {
 	// No nodeclass in the fake client.
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	fakeAPI := &fakeLambda{}
-	p := New(client, fakeAPI, fakeAPI, nil, "test", testLog)
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
 
 	nc := &v1.NodeClaim{
 		Spec: v1.NodeClaimSpec{
@@ -1721,5 +1721,49 @@ func TestProviderIsDriftedNodeClassNotFound(t *testing.T) {
 	_, err := p.IsDrifted(context.Background(), nc)
 	if err == nil {
 		t.Fatal("expected error for missing nodeclass")
+	}
+}
+
+func TestCreateCapacityErrorMarksOfferingUnavailable(t *testing.T) {
+	class, nodePool, scheme := testSchemeAndClass(t)
+	client := fake.NewClientBuilder().WithScheme(&scheme).WithObjects(class, nodePool).Build()
+	fakeAPI := &fakeLambda{
+		launchErr: fmt.Errorf("lambda api POST /api/v1/instance-operations/launch failed: 503: insufficient capacity"),
+	}
+	uo := NewUnavailableOfferings(5 * time.Minute)
+	p := New(client, fakeAPI, fakeAPI, nil, uo, "test", testLog)
+
+	// Create should fail with capacity error.
+	_, err := p.Create(context.Background(), testNodeClaim())
+	if !cloudprovider.IsInsufficientCapacityError(err) {
+		t.Fatalf("expected InsufficientCapacityError, got %v", err)
+	}
+
+	// The offering should now be marked unavailable.
+	if !uo.IsUnavailable("gpu_1x_gh200", "us-east-3") {
+		t.Fatal("expected offering to be marked unavailable after capacity error")
+	}
+
+	// GetInstanceTypes should reflect the unavailability.
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {
+			InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs},
+			Regions:      []lambdaclient.Region{{Name: "us-east-3"}},
+		},
+	})
+	p.cache = cache
+
+	its, err := p.GetInstanceTypes(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 1 {
+		t.Fatalf("expected 1 instance type, got %d", len(its))
+	}
+	if len(its[0].Offerings) != 1 {
+		t.Fatalf("expected 1 offering, got %d", len(its[0].Offerings))
+	}
+	if its[0].Offerings[0].Available {
+		t.Fatal("expected offering to be unavailable after capacity error")
 	}
 }

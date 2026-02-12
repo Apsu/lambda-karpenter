@@ -88,14 +88,11 @@ When `instanceType` is set, `GetInstanceTypes` filters to only that type and
 ### userData templating
 
 `spec.userData` supports Go `text/template` actions rendered at launch time.
-Available variables: `{{.InstanceType}}`, `{{.Region}}`, `{{.ClusterName}}`,
-`{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{`
-pass through unmodified (fast path). This enables instance-type-specific node
-labels in cloud-init without requiring a separate NodeClass per type.
-
-For bootstrap-time templates (`.tmpl` files), use Go template escaping to
-preserve launch-time variables: `{{ "{{.InstanceType}}" }}` renders to
-`{{.InstanceType}}` at bootstrap, which the provider then renders at launch.
+Available variables: `{{.Region}}`, `{{.ClusterName}}`, `{{.NodeClaimName}}`,
+`{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{` pass through unmodified
+(fast path). Node labels (instance-type, region, zone, capacity-type) are set by
+the provider on the NodeClaim and propagated to the Node by Karpenter — they do
+not need to be set in userData.
 
 ## GPU Operator Integration
 
@@ -118,6 +115,42 @@ that haven't finished registering yet.
 
 GPU NodePools use `WhenEmpty` consolidation to avoid disrupting running GPU
 workloads. `consolidateAfter: 60m` gives users time to submit follow-up jobs.
+
+---
+
+## Cluster Configuration (`cluster.yaml`)
+
+### Bootstrap → deploy handoff
+
+`lambdactl k8s bootstrap` writes a `cluster.yaml` file (plus kubeconfig) and a
+`lambda-karpenter-values.yaml` file to a cluster directory
+(`configs/<cluster-name>/` by default). The cluster config captures all facts
+discovered during bootstrap: cluster name, region, controller IPs, instance type,
+and join token. The Helm values file is pre-populated with the correct
+`cluster.type`, controller IP, join token, node class, and node pool settings
+so a single `helm install -f` deploys everything.
+
+### Multi-cluster separation
+
+Each cluster gets its own directory under `configs/`:
+
+```
+configs/
+  cluster-a/
+    cluster.yaml
+    kubeconfig
+  cluster-b/
+    cluster.yaml
+    kubeconfig
+```
+
+The `--cluster-dir` flag on `bootstrap` and resource commands makes it easy to
+manage multiple clusters from the same working directory.
+
+### File permissions
+
+`cluster.yaml` is written with `0600` permissions because it contains the
+join token. The Lambda API token is never stored in `cluster.yaml`.
 
 ---
 

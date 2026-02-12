@@ -1,0 +1,33 @@
+{{- if .Values.nodeClass.enabled }}
+apiVersion: karpenter.lambda.cloud/v1alpha1
+kind: LambdaNodeClass
+metadata:
+  name: {{ .Values.nodeClass.name }}
+  labels:
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
+spec:
+  region: {{ required "nodeClass.region is required when nodeClass.enabled=true" .Values.nodeClass.region | quote }}
+  {{- with .Values.nodeClass.instanceType }}
+  instanceType: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.nodeClass.image }}
+  {{- if .family }}
+  image:
+    family: {{ .family | quote }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.nodeClass.sshKeyNames }}
+  sshKeyNames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nodeClass.tags }}
+  tags:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  userData: |
+    {{- if .Values.nodeClass.userData }}
+    {{ .Values.nodeClass.userData | nindent 4 }}
+    {{- else }}
+    {{ include "lambda-karpenter.defaultUserData" . | nindent 4 }}
+    {{- end }}
+{{- end }}

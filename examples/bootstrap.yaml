@@ -1,25 +1,26 @@
 # Bootstrap config for lambdactl k8s bootstrap.
-# Copy to configs/bootstrap.yaml and customize for your cluster.
+# Copy this entire directory to configs/<cluster-name>/ and customize.
 #
 # Usage:
-#   lambdactl k8s bootstrap --config configs/bootstrap.yaml --rke2-token <token>
+#   lambdactl k8s bootstrap --config configs/<cluster-name>/bootstrap.yaml --join-token <token>
 #
-# CLI flags override config file values. Sensitive values like --rke2-token
+# CLI flags override config file values. Sensitive values like --join-token
 # and LAMBDA_API_TOKEN are best passed via flags or environment variables.
+#
+# Bootstrap writes cluster.yaml, kubeconfig, and lambda-karpenter-values.yaml
+# to the cluster directory. Then install via Helm:
+#   helm install lambda-karpenter charts/lambda-karpenter \
+#     -n karpenter --create-namespace \
+#     -f configs/<cluster-name>/lambda-karpenter-values.yaml \
+#     --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN
 
 clusterName: my-cluster
+clusterType: rke2          # "kubeadm" or "rke2"
 region: us-east-3
 instanceType: gpu_1x_gh200
 imageFamily: lambda-stack-24-04
 sshKeyName: my-key
-cloudInit: examples/bootstrap-controller-cloud-init.yaml
+cloudInit: controller-cloud-init.yaml
 
 # Optional: path to local SSH private key (default: ssh-agent).
 # sshKeyPath: ~/.ssh/id_ed25519
-
-# Optional: generate a LambdaNodeClass from template after bootstrap.
-# nodeclassTemplate: examples/lambdanodeclass.yaml
-# nodeclassOut: configs/lambdanodeclass.yaml
-
-# Optional: override output kubeconfig path (default: CLUSTER_NAME.kubeconfig).
-# kubeconfigOut: my-cluster.kubeconfig

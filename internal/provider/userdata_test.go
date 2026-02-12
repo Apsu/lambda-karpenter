@@ -6,15 +6,13 @@ import (
 )
 
 func TestRenderUserDataWithVars(t *testing.T) {
-	raw := `node-label:
-  - node.kubernetes.io/instance-type={{.InstanceType}}
-  - topology.kubernetes.io/region={{.Region}}
-  - cluster={{.ClusterName}}`
+	raw := `provider-id=lambda://abc123
+region={{.Region}}
+cluster={{.ClusterName}}`
 
 	ctx := userDataContext{
-		InstanceType: "gpu_1x_gh200",
-		Region:       "us-east-3",
-		ClusterName:  "my-cluster",
+		Region:      "us-east-3",
+		ClusterName: "my-cluster",
 	}
 
 	got, err := renderUserData(raw, ctx)
@@ -22,9 +20,6 @@ func TestRenderUserDataWithVars(t *testing.T) {
 		t.Fatalf("renderUserData: %v", err)
 	}
 
-	if !strings.Contains(got, "instance-type=gpu_1x_gh200") {
-		t.Fatalf("expected InstanceType rendered, got:\n%s", got)
-	}
 	if !strings.Contains(got, "region=us-east-3") {
 		t.Fatalf("expected Region rendered, got:\n%s", got)
 	}
@@ -54,9 +49,9 @@ func TestRenderUserDataInvalidTemplate(t *testing.T) {
 
 func TestRenderUserDataShellVarsPreserved(t *testing.T) {
 	raw := `INSTANCE_ID="${INSTANCE_ID}"
-type={{.InstanceType}}`
+region={{.Region}}`
 
-	ctx := userDataContext{InstanceType: "gpu_1x_gh200"}
+	ctx := userDataContext{Region: "us-east-3"}
 	got, err := renderUserData(raw, ctx)
 	if err != nil {
 		t.Fatalf("renderUserData: %v", err)
@@ -64,15 +59,14 @@ type={{.InstanceType}}`
 	if !strings.Contains(got, `"${INSTANCE_ID}"`) {
 		t.Fatalf("expected shell vars preserved, got:\n%s", got)
 	}
-	if !strings.Contains(got, "type=gpu_1x_gh200") {
-		t.Fatalf("expected InstanceType rendered, got:\n%s", got)
+	if !strings.Contains(got, "region=us-east-3") {
+		t.Fatalf("expected Region rendered, got:\n%s", got)
 	}
 }
 
 func TestRenderUserDataAllFields(t *testing.T) {
-	raw := "{{.InstanceType}} {{.Region}} {{.ClusterName}} {{.NodeClaimName}} {{.ImageFamily}} {{.ImageID}}"
+	raw := "{{.Region}} {{.ClusterName}} {{.NodeClaimName}} {{.ImageFamily}} {{.ImageID}}"
 	ctx := userDataContext{
-		InstanceType:  "gpu_1x_gh200",
 		Region:        "us-east-3",
 		ClusterName:   "test-cluster",
 		NodeClaimName: "nc-abc",
@@ -83,7 +77,7 @@ func TestRenderUserDataAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderUserData: %v", err)
 	}
-	expected := "gpu_1x_gh200 us-east-3 test-cluster nc-abc lambda-stack-24-04 img-123"
+	expected := "us-east-3 test-cluster nc-abc lambda-stack-24-04 img-123"
 	if got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
 	}

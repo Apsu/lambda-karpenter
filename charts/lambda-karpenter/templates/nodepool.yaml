@@ -1,0 +1,41 @@
+{{- if .Values.nodePool.enabled }}
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ .Values.nodePool.name }}
+  labels:
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{- with .Values.nodePool.architecture }}
+        kubernetes.io/arch: {{ . }}
+        {{- end }}
+        karpenter.sh/capacity-type: on-demand
+    spec:
+      nodeClassRef:
+        group: karpenter.lambda.cloud
+        kind: LambdaNodeClass
+        name: {{ .Values.nodeClass.name }}
+      requirements:
+        {{- with .Values.nodePool.instanceTypes }}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.nodePool.architecture }}
+        - key: kubernetes.io/arch
+          operator: In
+          values: [{{ . | quote }}]
+        {{- end }}
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+  disruption:
+    consolidationPolicy: {{ .Values.nodePool.disruption.consolidationPolicy }}
+    consolidateAfter: {{ .Values.nodePool.disruption.consolidateAfter }}
+  limits:
+    nodes: {{ .Values.nodePool.limits.nodes }}
+{{- end }}

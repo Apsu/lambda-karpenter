@@ -6,66 +6,52 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 	"time"
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
-	"golang.org/x/crypto/ssh"
 	"sigs.k8s.io/yaml"
 )
 
 // BootstrapConfig is the YAML config file format for bootstrap.
 type BootstrapConfig struct {
-	ClusterName       string `json:"clusterName" yaml:"clusterName"`
-	Region            string `json:"region" yaml:"region"`
-	InstanceType      string `json:"instanceType" yaml:"instanceType"`
-	ImageFamily       string `json:"imageFamily" yaml:"imageFamily"`
-	SSHKeyName        string `json:"sshKeyName" yaml:"sshKeyName"`
-	SSHKeyPath        string `json:"sshKeyPath" yaml:"sshKeyPath"`
-	SSHUser           string `json:"sshUser" yaml:"sshUser"`
-	CloudInit         string `json:"cloudInit" yaml:"cloudInit"`
-	RKE2Token         string `json:"rke2Token" yaml:"rke2Token"`
-	KubeconfigOut     string `json:"kubeconfigOut" yaml:"kubeconfigOut"`
-	NodeclassOut      string `json:"nodeclassOut" yaml:"nodeclassOut"`
-	NodeclassTemplate string `json:"nodeclassTemplate" yaml:"nodeclassTemplate"`
-}
-
-// templateData is the context available to all Go templates rendered by bootstrap.
-type templateData struct {
-	ClusterName  string
-	Region       string
-	InstanceType string
-	ImageFamily  string
-	SSHKeyName   string
-	RKE2Token    string
-	ControllerIP string // internal IP, populated after SSH
+	ClusterName          string `json:"clusterName" yaml:"clusterName"`
+	ClusterType          string `json:"clusterType" yaml:"clusterType"`     // "kubeadm" or "rke2"
+	Region               string `json:"region" yaml:"region"`
+	InstanceType         string `json:"instanceType" yaml:"instanceType"`
+	ImageFamily          string `json:"imageFamily" yaml:"imageFamily"`
+	SSHKeyName           string `json:"sshKeyName" yaml:"sshKeyName"`
+	SSHKeyPath           string `json:"sshKeyPath" yaml:"sshKeyPath"`
+	SSHUser              string `json:"sshUser" yaml:"sshUser"`
+	CloudInit            string `json:"cloudInit" yaml:"cloudInit"`
+	JoinToken            string `json:"joinToken" yaml:"joinToken"`
+	KubeconfigRemotePath string `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
 }
 
 type BootstrapCmd struct {
 	APIFlags
-	Config            string        `name:"config" help:"Path to YAML config."`
-	Region            string        `name:"region" help:"Lambda Cloud region."`
-	InstanceType      string        `name:"instance-type" help:"Instance type."`
-	ImageFamily       string        `name:"image-family" help:"Image family."`
-	SSHKey            string        `name:"ssh-key" help:"Lambda SSH key name."`
-	SSHKeyPath        string        `name:"ssh-key-path" help:"Path to local SSH private key."`
-	SSHUser           string        `name:"ssh-user" help:"SSH username (default ubuntu)."`
-	CloudInit         string        `name:"cloud-init" help:"Path to cloud-init template."`
-	RKE2Token         string        `name:"rke2-token" help:"RKE2 join token."`
-	ClusterName       string        `name:"cluster-name" help:"Cluster name."`
-	KubeconfigOut     string        `name:"kubeconfig-out" help:"Output kubeconfig path (default CLUSTER_NAME.kubeconfig)."`
-	NodeclassOut      string        `name:"nodeclass-out" help:"Output nodeclass YAML path (default configs/lambdanodeclass.yaml)."`
-	NodeclassTemplate string        `name:"nodeclass-template" help:"Path to nodeclass YAML template."`
-	Timeout           time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
+	Config       string        `name:"config" help:"Path to YAML config."`
+	Region       string        `name:"region" help:"Lambda Cloud region."`
+	InstanceType string        `name:"instance-type" help:"Instance type."`
+	ImageFamily  string        `name:"image-family" help:"Image family."`
+	SSHKey       string        `name:"ssh-key" help:"Lambda SSH key name."`
+	SSHKeyPath   string        `name:"ssh-key-path" help:"Path to local SSH private key."`
+	SSHUser      string        `name:"ssh-user" help:"SSH username (default ubuntu)."`
+	CloudInit    string        `name:"cloud-init" help:"Path to cloud-init template."`
+	JoinToken    string        `name:"join-token" help:"Cluster join token."`
+	ClusterName  string        `name:"cluster-name" help:"Cluster name."`
+	ClusterDir   string        `name:"cluster-dir" help:"Output directory for cluster.yaml and kubeconfig (default configs/<cluster-name>/)."`
+	Timeout      time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
 }
 
 func (c *BootstrapCmd) Run() error {
 	var cfg BootstrapConfig
+	var configDir string // directory containing the config file, for relative path resolution
 	if c.Config != "" {
 		data, err := os.ReadFile(c.Config)
 		fatalIf(err)
 		fatalIf(yaml.Unmarshal(data, &cfg))
+		configDir = filepath.Dir(c.Config)
 	}
 
 	// CLI flags override config values.
@@ -77,20 +63,11 @@ func (c *BootstrapCmd) Run() error {
 	applyStringOverride(&cfg.SSHKeyPath, c.SSHKeyPath)
 	applyStringOverride(&cfg.SSHUser, c.SSHUser)
 	applyStringOverride(&cfg.CloudInit, c.CloudInit)
-	applyStringOverride(&cfg.RKE2Token, c.RKE2Token)
-	applyStringOverride(&cfg.KubeconfigOut, c.KubeconfigOut)
-	applyStringOverride(&cfg.NodeclassOut, c.NodeclassOut)
-	applyStringOverride(&cfg.NodeclassTemplate, c.NodeclassTemplate)
+	applyStringOverride(&cfg.JoinToken, c.JoinToken)
 
 	// Apply defaults.
 	if cfg.SSHUser == "" {
 		cfg.SSHUser = "ubuntu"
-	}
-	if cfg.NodeclassOut == "" {
-		cfg.NodeclassOut = "configs/lambdanodeclass.yaml"
-	}
-	if cfg.KubeconfigOut == "" {
-		cfg.KubeconfigOut = cfg.ClusterName + ".kubeconfig"
 	}
 
 	// Validate required fields.
@@ -112,8 +89,31 @@ func (c *BootstrapCmd) Run() error {
 	if cfg.CloudInit == "" {
 		fatalf("cloud-init is required")
 	}
-	if cfg.RKE2Token == "" {
-		fatalf("rke2-token is required")
+	if cfg.JoinToken == "" {
+		fatalf("join-token is required")
+	}
+	if cfg.KubeconfigRemotePath == "" {
+		cfg.KubeconfigRemotePath = defaultKubeconfigRemotePath
+	}
+
+	// Compute cluster dir.
+	clusterDir := c.ClusterDir
+	if clusterDir == "" {
+		clusterDir = filepath.Join("configs", cfg.ClusterName)
+	}
+
+	// Resolve relative paths in config file against the config file's directory.
+	if configDir != "" {
+		cfg.CloudInit = resolvePath(configDir, cfg.CloudInit)
+	}
+
+	// Build partial ClusterConfig for template rendering.
+	cc := &ClusterConfig{
+		ClusterName: cfg.ClusterName,
+		Region:      cfg.Region,
+		ImageFamily: cfg.ImageFamily,
+		SSHKeyName:  cfg.SSHKeyName,
+		JoinToken:   cfg.JoinToken,
 	}
 
 	client := c.mustClient()
@@ -121,17 +121,8 @@ func (c *BootstrapCmd) Run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	td := templateData{
-		ClusterName:  cfg.ClusterName,
-		Region:       cfg.Region,
-		InstanceType: cfg.InstanceType,
-		ImageFamily:  cfg.ImageFamily,
-		SSHKeyName:   cfg.SSHKeyName,
-		RKE2Token:    cfg.RKE2Token,
-	}
-
 	// 1. Render cloud-init template.
-	userData, err := renderTemplate(cfg.CloudInit, td)
+	userData, err := renderTemplate(cfg.CloudInit, cc.TemplateData())
 	fatalIf(err)
 
 	// 2. Launch instance.
@@ -191,79 +182,74 @@ func (c *BootstrapCmd) Run() error {
 	}
 	fmt.Printf("instance active at %s\n", publicIP)
 
-	// 4. SSH -> wait for RKE2 kubeconfig -> download.
-	//    If the connection drops (e.g. host reboots during RKE2 install),
-	//    reconnect and resume waiting.
-	sshCfg, err := sshConfig(cfg.SSHUser, cfg.SSHKeyPath)
-	fatalIf(err)
-
-	var sshClient *ssh.Client
-	var raw []byte
-	for reconnects := 0; ; reconnects++ {
-		if reconnects > 0 {
-			sshClient.Close()
-			fmt.Fprintln(os.Stderr, "SSH connection lost, reconnecting...")
-		}
-
-		fmt.Printf("waiting for SSH on %s...\n", publicIP)
-		sshClient, err = waitSSH(ctx, publicIP, 22, sshCfg, 5*time.Second)
-		fatalIf(err)
-
-		fmt.Printf("waiting for %s...\n", rke2KubeconfigPath)
-		err = waitRemoteFile(ctx, sshClient, rke2KubeconfigPath, 5*time.Second)
-		if isSSHConnectionError(err) {
-			continue
-		}
-		fatalIf(err)
-
-		fmt.Println("downloading kubeconfig...")
-		raw, err = sshDownload(sshClient, rke2KubeconfigPath)
-		if isSSHConnectionError(err) {
-			continue
-		}
-		fatalIf(err)
-		break
+	// Write cluster.yaml early so it survives SSH failures or Ctrl+C.
+	// We'll update it with internalIP and kubeconfig path once those are known.
+	cc.Controller = ClusterController{
+		InstanceID:   instanceID,
+		InstanceType: cfg.InstanceType,
+		PublicIP:     publicIP,
 	}
-	defer sshClient.Close()
+	cc.KubeconfigRemotePath = cfg.KubeconfigRemotePath
+	fatalIf(os.MkdirAll(clusterDir, 0755))
+	fatalIf(writeClusterConfig(clusterDir, cc))
+	fmt.Printf("cluster config written to %s/cluster.yaml\n", clusterDir)
 
-	// 5. Parse and rewrite kubeconfig.
-	kubeCfg, err := parseKubeconfig(raw)
-	fatalIf(err)
-	rewriteKubeconfig(kubeCfg, publicIP, cfg.ClusterName)
+	// 4. SSH -> gather kubeconfig + internalIP -> update cluster.yaml.
+	fatalIf(gatherClusterInfo(ctx, cc, clusterDir, cfg.SSHUser, cfg.SSHKeyPath))
 
-	data, err := serializeKubeconfig(kubeCfg)
-	fatalIf(err)
+	// 5. Write Helm values file for the user.
+	valuesPath := filepath.Join(clusterDir, "lambda-karpenter-values.yaml")
+	fatalIf(writeHelmValues(valuesPath, cfg, cc))
+	fmt.Printf("helm values written to %s\n", valuesPath)
 
-	// 6. Wait for API readiness.
-	fmt.Println("waiting for Kubernetes API...")
-	restCfg, err := restConfigFromKubeconfig(kubeCfg)
-	fatalIf(err)
-	fatalIf(waitAPIReady(ctx, restCfg, 5*time.Second))
+	fmt.Println()
+	fmt.Println("next steps:")
+	fmt.Printf("  helm install lambda-karpenter charts/lambda-karpenter \\\n")
+	fmt.Printf("    -n karpenter --create-namespace \\\n")
+	fmt.Printf("    -f %s \\\n", valuesPath)
+	fmt.Printf("    --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN\n")
 
-	// 7. Detect internal IP.
-	internalIP, err := sshRun(sshClient, "hostname -I | awk '{print $1}'")
-	fatalIf(err)
-	internalIP = strings.TrimSpace(internalIP)
+	return nil
+}
 
-	// 8. Write kubeconfig.
-	fatalIf(writeKubeconfigFile(cfg.KubeconfigOut, data))
-	fmt.Printf("kubeconfig written to %s\n", cfg.KubeconfigOut)
-	fmt.Printf("export KUBECONFIG=%s\n", cfg.KubeconfigOut)
-
-	// 9. Generate nodeclass YAML if template provided.
-	if cfg.NodeclassTemplate != "" {
-		if internalIP == "" {
-			fmt.Fprintln(os.Stderr, "warning: could not determine internal IP; nodeclass not generated")
-		} else {
-			td.ControllerIP = internalIP
-			rendered, err := renderTemplate(cfg.NodeclassTemplate, td)
-			fatalIf(err)
-			fatalIf(os.MkdirAll(filepath.Dir(cfg.NodeclassOut), 0755))
-			fatalIf(os.WriteFile(cfg.NodeclassOut, rendered, 0644))
-			fmt.Printf("nodeclass written to %s\n", cfg.NodeclassOut)
-		}
+// writeHelmValues generates a lambda-karpenter Helm values file from the
+// bootstrap config and cluster config gathered during bootstrap.
+func writeHelmValues(path string, cfg BootstrapConfig, cc *ClusterConfig) error {
+	vals := map[string]any{
+		"config": map[string]any{
+			"clusterName": cfg.ClusterName,
+		},
+		"cluster": map[string]any{
+			"type":         cfg.ClusterType,
+			"controllerIP": cc.Controller.InternalIP,
+			"joinToken":    cfg.JoinToken,
+		},
+		"nodeClass": map[string]any{
+			"enabled":      true,
+			"name":         cfg.ClusterName,
+			"region":       cfg.Region,
+			"instanceType": cfg.InstanceType,
+			"image": map[string]any{
+				"family": cfg.ImageFamily,
+			},
+			"sshKeyNames": []string{cfg.SSHKeyName},
+		},
+		"nodePool": map[string]any{
+			"enabled":       true,
+			"name":          cfg.ClusterName,
+			"instanceTypes": []string{cfg.InstanceType},
+			"limits": map[string]any{
+				"nodes": 1,
+			},
+		},
 	}
-
+	data, err := yaml.Marshal(vals)
+	if err != nil {
+		return fmt.Errorf("marshaling helm values: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
 	return nil
 }
 

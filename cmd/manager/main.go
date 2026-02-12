@@ -54,7 +54,8 @@ func main() {
 
 	cache := lambdaclient.NewInstanceTypeCache(lambdaAPI, cfg.InstanceTypeCacheTTL)
 	listCache := lambdaclient.NewInstanceListCache(lambdaAPI, 5*time.Second)
-	cloudProvider := provider.New(op.GetClient(), lambdaAPI, listCache, cache, cfg.ClusterName, log.Log)
+	unavailableOfferings := provider.NewUnavailableOfferings(cfg.UnavailableOfferingsTTL)
+	cloudProvider := provider.New(op.GetClient(), lambdaAPI, listCache, cache, unavailableOfferings, cfg.ClusterName, log.Log)
 	overlayProvider := overlay.Decorate(cloudProvider, op.GetClient(), op.InstanceTypeStore)
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), overlayProvider)
 

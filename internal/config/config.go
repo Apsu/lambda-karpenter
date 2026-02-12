@@ -13,13 +13,15 @@ const (
 	defaultBaseURL              = "https://cloud.lambda.ai"
 	defaultRPS                  = 1
 	defaultLaunchMinInterval    = 5 * time.Second
-	defaultInstanceTypeCacheTTL = 10 * time.Minute
-	requiredClusterNameEnv      = "PROVIDER_CLUSTER_NAME"
+	defaultInstanceTypeCacheTTL      = 10 * time.Minute
+	defaultUnavailableOfferingsTTL  = 3 * time.Minute
+	requiredClusterNameEnv          = "PROVIDER_CLUSTER_NAME"
 	requiredTokenEnv            = "LAMBDA_API_TOKEN"
 	baseURLEnv                  = "LAMBDA_API_BASE_URL"
 	rpsEnv                      = "LAMBDA_API_RPS"
 	launchMinIntervalSecondsEnv = "LAMBDA_LAUNCH_MIN_INTERVAL_SECONDS"
-	instanceTypeCacheTTLEnv     = "INSTANCE_TYPE_CACHE_TTL"
+	instanceTypeCacheTTLEnv         = "INSTANCE_TYPE_CACHE_TTL"
+	unavailableOfferingsTTLEnv      = "UNAVAILABLE_OFFERINGS_TTL"
 )
 
 // Config defines provider configuration loaded from environment variables.
@@ -29,7 +31,8 @@ type Config struct {
 	ClusterName          string
 	RPS                  int
 	LaunchMinInterval    time.Duration
-	InstanceTypeCacheTTL time.Duration
+	InstanceTypeCacheTTL     time.Duration
+	UnavailableOfferingsTTL  time.Duration
 }
 
 func Load() (Config, error) {
@@ -49,6 +52,7 @@ func Load() (Config, error) {
 	cfg.RPS = getenvIntOr(rpsEnv, defaultRPS)
 	cfg.LaunchMinInterval = getenvDurationSecondsOr(launchMinIntervalSecondsEnv, defaultLaunchMinInterval)
 	cfg.InstanceTypeCacheTTL = getenvDurationOr(instanceTypeCacheTTLEnv, defaultInstanceTypeCacheTTL)
+	cfg.UnavailableOfferingsTTL = getenvDurationOr(unavailableOfferingsTTLEnv, defaultUnavailableOfferingsTTL)
 
 	return cfg, nil
 }
