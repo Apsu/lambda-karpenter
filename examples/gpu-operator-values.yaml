@@ -1,3 +1,8 @@
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
 toolkit:
   env:
     - name: CONTAINERD_SOCKET
@@ -11,6 +16,9 @@ daemonsets:
     - key: "karpenter.sh/unregistered"
       operator: "Exists"
       effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
 
 devicePlugin:
   env:
@@ -18,8 +26,16 @@ devicePlugin:
       value: volume-mounts
 
 node-feature-discovery:
+  gc:
+    tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
   worker:
     tolerations:
       - key: "karpenter.sh/unregistered"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/control-plane"
         operator: "Exists"
         effect: "NoSchedule"

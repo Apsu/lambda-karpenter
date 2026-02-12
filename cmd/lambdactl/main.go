@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -69,10 +70,45 @@ func (c *ListInstancesCmd) Run() error {
 	if c.Limit > 0 && c.Limit < len(items) {
 		items = items[:c.Limit]
 	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tSTATUS\tTYPE\tREGION\tIP\tAGE\tTAGS")
 	for _, inst := range items {
-		fmt.Printf("%s\t%s\t%s\t%s\n", inst.ID, inst.Status, inst.Type.Name, inst.Region.Name)
+		age := ""
+		if !inst.CreatedAt.IsZero() {
+			age = shortDuration(time.Since(inst.CreatedAt))
+		}
+		tags := formatTags(inst.Tags)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			inst.ID, inst.Name, inst.Status, inst.Type.Name, inst.Region.Name, inst.IP, age, tags)
 	}
+	w.Flush()
 	return nil
+}
+
+// shortDuration formats a duration as a human-friendly age string (e.g. "3d", "5h", "12m").
+func shortDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return "<1m"
+	}
+}
+
+// formatTags formats tag entries as a compact "k=v,k=v" string.
+func formatTags(tags []lambdaclient.TagEntry) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	parts := make([]string, len(tags))
+	for i, t := range tags {
+		parts[i] = t.Key + "=" + t.Value
+	}
+	return strings.Join(parts, ",")
 }
 
 type GetInstanceCmd struct {
@@ -85,8 +121,40 @@ func (c *GetInstanceCmd) Run() error {
 	ctx := context.Background()
 	inst, err := client.GetInstance(ctx, c.ID)
 	fatalIf(err)
-	fmt.Printf("id=%s status=%s type=%s region=%s ip=%s private_ip=%s\n",
-		inst.ID, inst.Status, inst.Type.Name, inst.Region.Name, inst.IP, inst.PrivateIP)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	field := func(label, value string) {
+		if value != "" {
+			fmt.Fprintf(w, "  %s:\t%s\n", label, value)
+		}
+	}
+
+	fmt.Fprintf(w, "%s\t%s\n", inst.Type.Name, inst.Status)
+	field("ID", inst.ID)
+	field("Name", inst.Name)
+	field("Hostname", inst.Hostname)
+	field("Region", inst.Region.Name+" ("+inst.Region.Description+")")
+	field("IP", inst.IP)
+	field("Private IP", inst.PrivateIP)
+	field("Type", inst.Type.Description)
+	field("GPU", inst.Type.GPUDesc)
+	field("Price", fmt.Sprintf("$%.2f/hr", float64(inst.Type.PriceCents)/100.0))
+	specs := inst.Type.Specs
+	field("Specs", fmt.Sprintf("%d vCPU, %d GiB RAM, %d GiB disk, %d GPU",
+		specs.VCPUs, specs.MemoryGiB, specs.StorageGiB, specs.GPUs))
+	if !inst.CreatedAt.IsZero() {
+		field("Created", inst.CreatedAt.Format(time.RFC3339)+" ("+shortDuration(time.Since(inst.CreatedAt))+")")
+	}
+	if len(inst.SSHKeyNames) > 0 {
+		field("SSH Keys", strings.Join(inst.SSHKeyNames, ", "))
+	}
+	if len(inst.FileSystemNames) > 0 {
+		field("Filesystems", strings.Join(inst.FileSystemNames, ", "))
+	}
+	if len(inst.Tags) > 0 {
+		field("Tags", formatTags(inst.Tags))
+	}
+	w.Flush()
 	return nil
 }
 
@@ -104,6 +172,9 @@ func (c *ListInstanceTypesCmd) Run() error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tGPU\tVCPU\tRAM\tDISK\tGPUS\tPRICE\tREGIONS")
 	for _, name := range names {
 		item := items[name]
 		regionNames := make([]string, 0, len(item.Regions))
@@ -117,17 +188,18 @@ func (c *ListInstanceTypesCmd) Run() error {
 			sort.Strings(regionNames)
 			regions = strings.Join(regionNames, ",")
 		}
-		fmt.Printf("%s\t%d vcpu\t%d GiB mem\t%d GiB storage\t%d gpu\t$%.2f\tregions=%d [%s]\n",
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d GiB\t%d GiB\t%d\t$%.2f/hr\t%s\n",
 			name,
+			item.InstanceType.GPUDesc,
 			item.InstanceType.Specs.VCPUs,
 			item.InstanceType.Specs.MemoryGiB,
 			item.InstanceType.Specs.StorageGiB,
 			item.InstanceType.Specs.GPUs,
 			float64(item.InstanceType.PriceCents)/100.0,
-			len(item.Regions),
 			regions,
 		)
 	}
+	w.Flush()
 	return nil
 }
 

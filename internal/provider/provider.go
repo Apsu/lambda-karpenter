@@ -48,22 +48,24 @@ var _ cloudprovider.CloudProvider = (*Provider)(nil)
 
 // Provider implements the Karpenter CloudProvider interface for Lambda Cloud.
 type Provider struct {
-	kubeClient  client.Client
-	lambda      LambdaAPI
-	listCache   InstanceLister
-	cache       *lambdaclient.InstanceTypeCache
-	clusterName string
-	log         logr.Logger
+	kubeClient            client.Client
+	lambda                LambdaAPI
+	listCache             InstanceLister
+	cache                 *lambdaclient.InstanceTypeCache
+	unavailableOfferings  *UnavailableOfferings
+	clusterName           string
+	log                   logr.Logger
 }
 
-func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, cache *lambdaclient.InstanceTypeCache, clusterName string, log logr.Logger) *Provider {
+func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, cache *lambdaclient.InstanceTypeCache, unavailableOfferings *UnavailableOfferings, clusterName string, log logr.Logger) *Provider {
 	return &Provider{
-		kubeClient:  kubeClient,
-		lambda:      lambda,
-		listCache:   listCache,
-		cache:       cache,
-		clusterName: clusterName,
-		log:         log.WithName("lambda-provider"),
+		kubeClient:           kubeClient,
+		lambda:               lambda,
+		listCache:            listCache,
+		cache:                cache,
+		unavailableOfferings: unavailableOfferings,
+		clusterName:          clusterName,
+		log:                  log.WithName("lambda-provider"),
 	}
 }
 
@@ -150,6 +152,8 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	if err != nil {
 		instanceCreateTotal.WithLabelValues("error").Inc()
 		if lambdaclient.IsCapacityError(err) {
+			p.unavailableOfferings.MarkUnavailable(launchReq.InstanceTypeName, launchReq.RegionName)
+			log.Info("marked offering unavailable", "instanceType", launchReq.InstanceTypeName, "region", launchReq.RegionName)
 			return nil, cloudprovider.NewInsufficientCapacityError(err)
 		}
 		return nil, err
@@ -563,7 +567,7 @@ func (p *Provider) instanceTypeFromItem(name string, item lambdaclient.InstanceT
 		)
 		offerings = append(offerings, &cloudprovider.Offering{
 			Requirements: reqs,
-			Available:    region.Name != "unknown",
+			Available:    region.Name != "unknown" && !p.unavailableOfferings.IsUnavailable(name, region.Name),
 			Price:        float64(item.InstanceType.PriceCents) / 100.0,
 		})
 	}

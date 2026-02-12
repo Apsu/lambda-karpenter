@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	"golang.org/x/crypto/ssh"
 	"sigs.k8s.io/yaml"
 )
 
@@ -20,10 +24,10 @@ type ClusterConfig struct {
 	Controller ClusterController `json:"controller" yaml:"controller"`
 	Versions   ClusterVersions   `json:"versions" yaml:"versions"`
 
-	Kubeconfig     string   `json:"kubeconfig" yaml:"kubeconfig"`                                   // relative to cluster dir
-	NodeClassFiles []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`        // relative to cluster dir
-	NodePoolFiles  []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`          // relative to cluster dir
-	GPUValues      string   `json:"gpuValues,omitempty" yaml:"gpuValues,omitempty"`                  // relative to cluster dir
+	Kubeconfig          string   `json:"kubeconfig" yaml:"kubeconfig"`                                         // relative to cluster dir
+	KubeconfigRemotePath string  `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"` // remote path on controller
+	NodeClassFiles      []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`             // relative to cluster dir
+	NodePoolFiles       []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`               // relative to cluster dir
 }
 
 type ClusterController struct {
@@ -34,18 +38,12 @@ type ClusterController struct {
 }
 
 type ClusterVersions struct {
-	GPUOperator     string `json:"gpuOperator" yaml:"gpuOperator"`
 	LambdaKarpenter string `json:"lambdaKarpenter" yaml:"lambdaKarpenter"`
 }
 
 // KubeconfigPath resolves the kubeconfig path relative to clusterDir.
 func (c *ClusterConfig) KubeconfigPath(clusterDir string) string {
 	return resolvePath(clusterDir, c.Kubeconfig)
-}
-
-// GPUValuesPath resolves the GPU values path relative to clusterDir.
-func (c *ClusterConfig) GPUValuesPath(clusterDir string) string {
-	return resolvePath(clusterDir, c.GPUValues)
 }
 
 // ResolveNodeClassFiles resolves nodeclass file paths relative to clusterDir.
@@ -146,4 +144,105 @@ func relPath(base, target string) string {
 		return absTarget
 	}
 	return rel
+}
+
+// findClusterDir returns the cluster directory path. If explicit is set, it is
+// used directly. Otherwise, if ./cluster.yaml exists, "." is returned. Returns
+// "" if no cluster directory can be found.
+func findClusterDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if _, err := os.Stat("cluster.yaml"); err == nil {
+		return "."
+	}
+	return ""
+}
+
+// gatherClusterInfo SSHes into the controller and populates missing fields in
+// the ClusterConfig: kubeconfig and internalIP. It is idempotent — fields that
+// are already set are not overwritten. The updated config is written back to
+// cluster.yaml in clusterDir.
+func gatherClusterInfo(ctx context.Context, cc *ClusterConfig, clusterDir, sshUser, sshKeyPath string) error {
+	needKubeconfig := cc.Kubeconfig == ""
+	needInternalIP := cc.Controller.InternalIP == ""
+	if !needKubeconfig && !needInternalIP {
+		return nil
+	}
+
+	if cc.Controller.PublicIP == "" {
+		return fmt.Errorf("controller.publicIP is required for gather")
+	}
+
+	sshCfg, err := sshConfig(sshUser, sshKeyPath)
+	if err != nil {
+		return err
+	}
+
+	remotePath := cc.KubeconfigRemotePath
+	if remotePath == "" {
+		remotePath = defaultKubeconfigRemotePath
+	}
+
+	var sshClient *ssh.Client
+
+	if needKubeconfig {
+		var raw []byte
+		sshClient, raw, err = fetchRemoteKubeconfig(ctx, cc.Controller.PublicIP, 22, sshCfg, remotePath)
+		if err != nil {
+			return err
+		}
+		defer sshClient.Close()
+
+		kubeCfg, err := parseKubeconfig(raw)
+		if err != nil {
+			return err
+		}
+		rewriteKubeconfig(kubeCfg, cc.Controller.PublicIP, cc.ClusterName)
+
+		data, err := serializeKubeconfig(kubeCfg)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("waiting for Kubernetes API...")
+		restCfg, err := restConfigFromKubeconfig(kubeCfg)
+		if err != nil {
+			return err
+		}
+		if err := waitAPIReady(ctx, restCfg, 5*time.Second); err != nil {
+			return err
+		}
+
+		kubeconfigPath := filepath.Join(clusterDir, "kubeconfig")
+		if err := writeKubeconfigFile(kubeconfigPath, data); err != nil {
+			return err
+		}
+		fmt.Printf("kubeconfig written to %s\n", kubeconfigPath)
+		fmt.Printf("export KUBECONFIG=%s\n", kubeconfigPath)
+
+		cc.Kubeconfig = "kubeconfig"
+	}
+
+	if needInternalIP {
+		if sshClient == nil {
+			fmt.Printf("waiting for SSH on %s...\n", cc.Controller.PublicIP)
+			sshClient, err = waitSSH(ctx, cc.Controller.PublicIP, 22, sshCfg, 5*time.Second)
+			if err != nil {
+				return err
+			}
+			defer sshClient.Close()
+		}
+		internalIP, err := sshRun(sshClient, "hostname -I | awk '{print $1}'")
+		if err != nil {
+			return err
+		}
+		cc.Controller.InternalIP = strings.TrimSpace(internalIP)
+	}
+
+	if err := writeClusterConfig(clusterDir, cc); err != nil {
+		return err
+	}
+	fmt.Printf("cluster config updated: %s/cluster.yaml\n", clusterDir)
+	return nil
 }

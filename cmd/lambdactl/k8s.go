@@ -26,6 +26,7 @@ import (
 type K8sCmd struct {
 	Bootstrap  BootstrapCmd  `cmd:"" help:"Launch controller, wait for RKE2, extract kubeconfig."`
 	Kubeconfig KubeconfigCmd `cmd:"" help:"Extract kubeconfig from existing remote RKE2 node."`
+	Gather     GatherCmd     `cmd:"" help:"SSH into controller and populate missing cluster.yaml fields (kubeconfig, internalIP)."`
 	User       UserCmd       `cmd:"" help:"Manage per-user SA + token kubeconfigs."`
 	Deploy     DeployCmd     `cmd:"" help:"Install GPU operator + lambda-karpenter + apply resources."`
 	Apply      ApplyCmd      `cmd:"" help:"Server-side apply resources."`
@@ -37,9 +38,53 @@ type K8sCmd struct {
 
 // K8sFlags are shared flags for k8s resource commands.
 type K8sFlags struct {
+	ClusterDir string `name:"cluster-dir" help:"Path to cluster directory (resolves kubeconfig from cluster.yaml)."`
 	Kubeconfig string `name:"kubeconfig" env:"KUBECONFIG" help:"Path to kubeconfig."`
 	Context    string `name:"context" help:"Kubeconfig context."`
 	Namespace  string `name:"namespace" default:"karpenter" help:"Namespace."`
+}
+
+// resolveKubeconfig sets Kubeconfig from cluster.yaml when --kubeconfig is not
+// explicitly provided and a cluster directory is available.
+func (f *K8sFlags) resolveKubeconfig() {
+	if f.Kubeconfig != "" {
+		return
+	}
+	dir := findClusterDir(f.ClusterDir)
+	if dir == "" {
+		return
+	}
+	cc, err := readClusterConfig(dir)
+	if err != nil {
+		return
+	}
+	if kp := cc.KubeconfigPath(dir); kp != "" {
+		f.Kubeconfig = kp
+	}
+}
+
+// GatherCmd SSHes into the controller and populates missing cluster.yaml
+// fields (kubeconfig, internalIP). Standalone recovery after partial bootstrap.
+type GatherCmd struct {
+	ClusterDir string        `name:"cluster-dir" help:"Path to cluster directory."`
+	SSHUser    string        `name:"ssh-user" default:"ubuntu" help:"SSH username."`
+	SSHKeyPath string        `name:"ssh-key-path" help:"Path to SSH private key."`
+	Timeout    time.Duration `name:"timeout" default:"10m" help:"Timeout."`
+}
+
+func (c *GatherCmd) Run() error {
+	dir := findClusterDir(c.ClusterDir)
+	if dir == "" {
+		fatalf("no cluster.yaml found; specify --cluster-dir")
+	}
+	cc, err := readClusterConfig(dir)
+	fatalIf(err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
+
+	fatalIf(gatherClusterInfo(ctx, cc, dir, c.SSHUser, c.SSHKeyPath))
+	return nil
 }
 
 // --- Resource commands ---
@@ -52,6 +97,7 @@ type ApplyCmd struct {
 }
 
 func (c *ApplyCmd) Run() error {
+	c.resolveKubeconfig()
 	var paths []string
 	paths = append(paths, c.NodeClass...)
 	paths = append(paths, c.NodePool...)
@@ -73,6 +119,7 @@ type DeleteCmd struct {
 }
 
 func (c *DeleteCmd) Run() error {
+	c.resolveKubeconfig()
 	if c.NodeClass == "" && c.NodePool == "" && c.NodeClaim == "" {
 		fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
 	}
@@ -93,6 +140,7 @@ type StatusCmd struct {
 }
 
 func (c *StatusCmd) Run() error {
+	c.resolveKubeconfig()
 	listStatus(c.K8sFlags)
 	return nil
 }
@@ -102,6 +150,7 @@ type NodeclaimsCmd struct {
 }
 
 func (c *NodeclaimsCmd) Run() error {
+	c.resolveKubeconfig()
 	listNodeClaims(c.K8sFlags)
 	return nil
 }
@@ -113,6 +162,7 @@ type WaitCmd struct {
 }
 
 func (c *WaitCmd) Run() error {
+	c.resolveKubeconfig()
 	waitNodeClaimReady(c.K8sFlags, c.NodeClaim, c.Timeout)
 	return nil
 }

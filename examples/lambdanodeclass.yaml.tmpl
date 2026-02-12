@@ -41,7 +41,7 @@ spec:
           node-label:
             - node.kubernetes.io/instance-type={{ "{{.InstanceType}}" }}
             - topology.kubernetes.io/region={{.Region}}
-            - topology.kubernetes.io/zone={{.Region}}
+            - topology.kubernetes.io/zone={{.Region}}a
             - karpenter.sh/capacity-type=on-demand
           CFG
       - systemctl enable rke2-agent

@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 	"time"
 
 	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
-	"golang.org/x/crypto/ssh"
 	"sigs.k8s.io/yaml"
 )
 
@@ -26,9 +24,9 @@ type BootstrapConfig struct {
 	SSHUser        string   `json:"sshUser" yaml:"sshUser"`
 	CloudInit      string   `json:"cloudInit" yaml:"cloudInit"`
 	JoinToken      string   `json:"joinToken" yaml:"joinToken"`
-	NodeClassFiles []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`
-	NodePoolFiles  []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`
-	GPUValues      string   `json:"gpuValues,omitempty" yaml:"gpuValues,omitempty"`
+	NodeClassFiles       []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`
+	NodePoolFiles        []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`
+	KubeconfigRemotePath string   `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
 }
 
 type BootstrapCmd struct {
@@ -95,6 +93,9 @@ func (c *BootstrapCmd) Run() error {
 	if cfg.JoinToken == "" {
 		fatalf("join-token is required")
 	}
+	if cfg.KubeconfigRemotePath == "" {
+		cfg.KubeconfigRemotePath = defaultKubeconfigRemotePath
+	}
 
 	// Compute cluster dir.
 	clusterDir := c.ClusterDir
@@ -107,7 +108,6 @@ func (c *BootstrapCmd) Run() error {
 		cfg.CloudInit = resolvePath(configDir, cfg.CloudInit)
 		cfg.NodeClassFiles = resolvePaths(configDir, cfg.NodeClassFiles)
 		cfg.NodePoolFiles = resolvePaths(configDir, cfg.NodePoolFiles)
-		cfg.GPUValues = resolvePath(configDir, cfg.GPUValues)
 	}
 
 	// Build partial ClusterConfig for template rendering.
@@ -185,93 +185,29 @@ func (c *BootstrapCmd) Run() error {
 	}
 	fmt.Printf("instance active at %s\n", publicIP)
 
-	// 4. SSH -> wait for RKE2 kubeconfig -> download.
-	//    If the connection drops (e.g. host reboots during RKE2 install),
-	//    reconnect and resume waiting.
-	sshCfg, err := sshConfig(cfg.SSHUser, cfg.SSHKeyPath)
-	fatalIf(err)
-
-	var sshClient *ssh.Client
-	var raw []byte
-	for reconnects := 0; ; reconnects++ {
-		if reconnects > 0 {
-			sshClient.Close()
-			fmt.Fprintln(os.Stderr, "SSH connection lost, reconnecting...")
-		}
-
-		fmt.Printf("waiting for SSH on %s...\n", publicIP)
-		sshClient, err = waitSSH(ctx, publicIP, 22, sshCfg, 5*time.Second)
-		fatalIf(err)
-
-		fmt.Printf("waiting for %s...\n", rke2KubeconfigPath)
-		err = waitRemoteFile(ctx, sshClient, rke2KubeconfigPath, 5*time.Second)
-		if isSSHConnectionError(err) {
-			continue
-		}
-		fatalIf(err)
-
-		fmt.Println("downloading kubeconfig...")
-		raw, err = sshDownload(sshClient, rke2KubeconfigPath)
-		if isSSHConnectionError(err) {
-			continue
-		}
-		fatalIf(err)
-		break
-	}
-	defer sshClient.Close()
-
-	// 5. Parse and rewrite kubeconfig.
-	kubeCfg, err := parseKubeconfig(raw)
-	fatalIf(err)
-	rewriteKubeconfig(kubeCfg, publicIP, cfg.ClusterName)
-
-	data, err := serializeKubeconfig(kubeCfg)
-	fatalIf(err)
-
-	// 6. Wait for API readiness.
-	fmt.Println("waiting for Kubernetes API...")
-	restCfg, err := restConfigFromKubeconfig(kubeCfg)
-	fatalIf(err)
-	fatalIf(waitAPIReady(ctx, restCfg, 5*time.Second))
-
-	// 7. Detect internal IP.
-	internalIP, err := sshRun(sshClient, "hostname -I | awk '{print $1}'")
-	fatalIf(err)
-	internalIP = strings.TrimSpace(internalIP)
-
-	// 8. Write kubeconfig to cluster dir.
-	kubeconfigPath := filepath.Join(clusterDir, "kubeconfig")
-	fatalIf(os.MkdirAll(clusterDir, 0755))
-	fatalIf(writeKubeconfigFile(kubeconfigPath, data))
-	fmt.Printf("kubeconfig written to %s\n", kubeconfigPath)
-	fmt.Printf("export KUBECONFIG=%s\n", kubeconfigPath)
-
-	// 9. Write cluster.yaml with all discovered facts.
+	// Write cluster.yaml early so it survives SSH failures or Ctrl+C.
+	// We'll update it with internalIP and kubeconfig path once those are known.
 	cc.Controller = ClusterController{
 		InstanceID:   instanceID,
 		InstanceType: cfg.InstanceType,
-		InternalIP:   internalIP,
 		PublicIP:     publicIP,
 	}
 	cc.Versions = ClusterVersions{
-		GPUOperator:     os.Getenv("GPU_OPERATOR_VERSION"),
 		LambdaKarpenter: os.Getenv("VERSION"),
 	}
-	cc.Kubeconfig = "kubeconfig"
-
-	// Store file paths relative to the cluster dir.
+	cc.KubeconfigRemotePath = cfg.KubeconfigRemotePath
 	for _, f := range cfg.NodeClassFiles {
 		cc.NodeClassFiles = append(cc.NodeClassFiles, relPath(clusterDir, f))
 	}
 	for _, f := range cfg.NodePoolFiles {
 		cc.NodePoolFiles = append(cc.NodePoolFiles, relPath(clusterDir, f))
 	}
-	if cfg.GPUValues != "" {
-		cc.GPUValues = relPath(clusterDir, cfg.GPUValues)
-	}
-
+	fatalIf(os.MkdirAll(clusterDir, 0755))
 	fatalIf(writeClusterConfig(clusterDir, cc))
 	fmt.Printf("cluster config written to %s/cluster.yaml\n", clusterDir)
+
+	// 4. SSH -> gather kubeconfig + internalIP -> update cluster.yaml.
+	fatalIf(gatherClusterInfo(ctx, cc, clusterDir, cfg.SSHUser, cfg.SSHKeyPath))
 	fmt.Println()
 	fmt.Println("next steps:")
 	fmt.Printf("  lambdactl k8s deploy --cluster-dir %s\n", clusterDir)
