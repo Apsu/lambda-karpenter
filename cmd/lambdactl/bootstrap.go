@@ -15,18 +15,17 @@ import (
 
 // BootstrapConfig is the YAML config file format for bootstrap.
 type BootstrapConfig struct {
-	ClusterName    string   `json:"clusterName" yaml:"clusterName"`
-	Region         string   `json:"region" yaml:"region"`
-	InstanceType   string   `json:"instanceType" yaml:"instanceType"`
-	ImageFamily    string   `json:"imageFamily" yaml:"imageFamily"`
-	SSHKeyName     string   `json:"sshKeyName" yaml:"sshKeyName"`
-	SSHKeyPath     string   `json:"sshKeyPath" yaml:"sshKeyPath"`
-	SSHUser        string   `json:"sshUser" yaml:"sshUser"`
-	CloudInit      string   `json:"cloudInit" yaml:"cloudInit"`
-	JoinToken      string   `json:"joinToken" yaml:"joinToken"`
-	NodeClassFiles       []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`
-	NodePoolFiles        []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`
-	KubeconfigRemotePath string   `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
+	ClusterName          string `json:"clusterName" yaml:"clusterName"`
+	ClusterType          string `json:"clusterType" yaml:"clusterType"`     // "kubeadm" or "rke2"
+	Region               string `json:"region" yaml:"region"`
+	InstanceType         string `json:"instanceType" yaml:"instanceType"`
+	ImageFamily          string `json:"imageFamily" yaml:"imageFamily"`
+	SSHKeyName           string `json:"sshKeyName" yaml:"sshKeyName"`
+	SSHKeyPath           string `json:"sshKeyPath" yaml:"sshKeyPath"`
+	SSHUser              string `json:"sshUser" yaml:"sshUser"`
+	CloudInit            string `json:"cloudInit" yaml:"cloudInit"`
+	JoinToken            string `json:"joinToken" yaml:"joinToken"`
+	KubeconfigRemotePath string `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
 }
 
 type BootstrapCmd struct {
@@ -106,8 +105,6 @@ func (c *BootstrapCmd) Run() error {
 	// Resolve relative paths in config file against the config file's directory.
 	if configDir != "" {
 		cfg.CloudInit = resolvePath(configDir, cfg.CloudInit)
-		cfg.NodeClassFiles = resolvePaths(configDir, cfg.NodeClassFiles)
-		cfg.NodePoolFiles = resolvePaths(configDir, cfg.NodePoolFiles)
 	}
 
 	// Build partial ClusterConfig for template rendering.
@@ -192,26 +189,67 @@ func (c *BootstrapCmd) Run() error {
 		InstanceType: cfg.InstanceType,
 		PublicIP:     publicIP,
 	}
-	cc.Versions = ClusterVersions{
-		LambdaKarpenter: os.Getenv("VERSION"),
-	}
 	cc.KubeconfigRemotePath = cfg.KubeconfigRemotePath
-	for _, f := range cfg.NodeClassFiles {
-		cc.NodeClassFiles = append(cc.NodeClassFiles, relPath(clusterDir, f))
-	}
-	for _, f := range cfg.NodePoolFiles {
-		cc.NodePoolFiles = append(cc.NodePoolFiles, relPath(clusterDir, f))
-	}
 	fatalIf(os.MkdirAll(clusterDir, 0755))
 	fatalIf(writeClusterConfig(clusterDir, cc))
 	fmt.Printf("cluster config written to %s/cluster.yaml\n", clusterDir)
 
 	// 4. SSH -> gather kubeconfig + internalIP -> update cluster.yaml.
 	fatalIf(gatherClusterInfo(ctx, cc, clusterDir, cfg.SSHUser, cfg.SSHKeyPath))
+
+	// 5. Write Helm values file for the user.
+	valuesPath := filepath.Join(clusterDir, "lambda-karpenter-values.yaml")
+	fatalIf(writeHelmValues(valuesPath, cfg, cc))
+	fmt.Printf("helm values written to %s\n", valuesPath)
+
 	fmt.Println()
 	fmt.Println("next steps:")
-	fmt.Printf("  lambdactl k8s deploy --cluster-dir %s\n", clusterDir)
+	fmt.Printf("  helm install lambda-karpenter charts/lambda-karpenter \\\n")
+	fmt.Printf("    -n karpenter --create-namespace \\\n")
+	fmt.Printf("    -f %s \\\n", valuesPath)
+	fmt.Printf("    --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN\n")
 
+	return nil
+}
+
+// writeHelmValues generates a lambda-karpenter Helm values file from the
+// bootstrap config and cluster config gathered during bootstrap.
+func writeHelmValues(path string, cfg BootstrapConfig, cc *ClusterConfig) error {
+	vals := map[string]any{
+		"config": map[string]any{
+			"clusterName": cfg.ClusterName,
+		},
+		"cluster": map[string]any{
+			"type":         cfg.ClusterType,
+			"controllerIP": cc.Controller.InternalIP,
+			"joinToken":    cfg.JoinToken,
+		},
+		"nodeClass": map[string]any{
+			"enabled":      true,
+			"name":         cfg.ClusterName,
+			"region":       cfg.Region,
+			"instanceType": cfg.InstanceType,
+			"image": map[string]any{
+				"family": cfg.ImageFamily,
+			},
+			"sshKeyNames": []string{cfg.SSHKeyName},
+		},
+		"nodePool": map[string]any{
+			"enabled":       true,
+			"name":          cfg.ClusterName,
+			"instanceTypes": []string{cfg.InstanceType},
+			"limits": map[string]any{
+				"nodes": 1,
+			},
+		},
+	}
+	data, err := yaml.Marshal(vals)
+	if err != nil {
+		return fmt.Errorf("marshaling helm values: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
 	return nil
 }
 

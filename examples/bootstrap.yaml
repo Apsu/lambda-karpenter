@@ -7,10 +7,15 @@
 # CLI flags override config file values. Sensitive values like --join-token
 # and LAMBDA_API_TOKEN are best passed via flags or environment variables.
 #
-# Bootstrap writes cluster.yaml and kubeconfig to the cluster directory.
-# Then: lambdactl k8s deploy --cluster-dir configs/<cluster-name>/
+# Bootstrap writes cluster.yaml, kubeconfig, and lambda-karpenter-values.yaml
+# to the cluster directory. Then install via Helm:
+#   helm install lambda-karpenter charts/lambda-karpenter \
+#     -n karpenter --create-namespace \
+#     -f configs/<cluster-name>/lambda-karpenter-values.yaml \
+#     --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN
 
 clusterName: my-cluster
+clusterType: rke2          # "kubeadm" or "rke2"
 region: us-east-3
 instanceType: gpu_1x_gh200
 imageFamily: lambda-stack-24-04
@@ -19,8 +24,3 @@ cloudInit: controller-cloud-init.yaml
 
 # Optional: path to local SSH private key (default: ssh-agent).
 # sshKeyPath: ~/.ssh/id_ed25519
-
-# Resource files applied by deploy. Paths are relative to this config file.
-# .tmpl files are rendered with cluster.yaml data at deploy time.
-nodeClassFiles: [lambdanodeclass.yaml.tmpl]
-nodePoolFiles: [nodepool.yaml]

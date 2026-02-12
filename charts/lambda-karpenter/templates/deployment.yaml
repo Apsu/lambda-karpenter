@@ -67,7 +67,11 @@ spec:
             - name: LAMBDA_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "config.apiTokenSecret.name is required" .Values.config.apiTokenSecret.name | quote }}
+                  {{- if .Values.secret.create }}
+                  name: {{ include "lambda-karpenter.fullname" . }}-api-token
+                  {{- else }}
+                  name: {{ required "config.apiTokenSecret.name is required (or set secret.create=true)" .Values.config.apiTokenSecret.name | quote }}
+                  {{- end }}
                   key: {{ .Values.config.apiTokenSecret.key | quote }}
           {{- with .Values.extraEnv }}
           {{- toYaml . | nindent 12 }}

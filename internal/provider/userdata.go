@@ -8,7 +8,6 @@ import (
 
 // userDataContext holds the values available to Go templates in userData.
 type userDataContext struct {
-	InstanceType  string
 	Region        string
 	ClusterName   string
 	NodeClaimName string

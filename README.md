@@ -66,41 +66,32 @@ This will:
 4. Write `cluster.yaml` and `kubeconfig` to `configs/<cluster-name>/`
 
 The `cluster.yaml` file records all discovered facts (controller IPs, instance
-type, region, join token, versions) for use by `deploy`. See
-`examples/cluster.yaml` for the full schema.
+type, region, join token) for use by other commands. See `examples/cluster.yaml`
+for the full schema. Bootstrap also generates `lambda-karpenter-values.yaml` with
+Helm values pre-populated from the cluster config.
 
 ### 2. Deploy the stack
 
-Install the GPU operator, lambda-karpenter Helm chart, and apply NodeClass + NodePool:
+Install the GPU operator and lambda-karpenter via Helm:
 
 ```bash
-lambdactl k8s deploy \
-  --cluster-dir configs/my-cluster \
-  --nodeclass-file examples/lambdanodeclass.yaml.tmpl \
-  --nodepool-file examples/nodepool.yaml
+export KUBECONFIG=configs/my-cluster/kubeconfig
+
+helm install gpu-operator nvidia/gpu-operator \
+  -n gpu-operator --create-namespace \
+  -f examples/gpu-operator-values.yaml
+
+helm install lambda-karpenter charts/lambda-karpenter \
+  -n karpenter --create-namespace \
+  -f configs/my-cluster/lambda-karpenter-values.yaml \
+  --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN
 ```
 
-When `--cluster-dir` is provided, deploy reads `cluster.yaml` for cluster name,
-kubeconfig path, image tag, and GPU operator version. CLI flags and environment
-variables still override.
-
-Files ending in `.tmpl` are rendered with data from `cluster.yaml` before apply.
-This supports two-stage templating where deploy-time variables (e.g. `{{.Region}}`,
-`{{.ControllerIP}}`) resolve from cluster.yaml while launch-time variables
-(e.g. `{{.InstanceType}}`) pass through for the provider to render.
-
-Deploy also works without `--cluster-dir` using explicit flags:
-
-```bash
-lambdactl k8s deploy \
-  --cluster-name my-cluster \
-  --lambda-api-token <token> \
-  --nodeclass-file configs/lambdanodeclass.yaml \
-  --nodepool-file configs/nodepool.yaml
-```
-
-`--image-tag` defaults to `$VERSION` from `.env`. `--cluster-name` defaults to
-`$CLUSTER_NAME`. See `lambdactl k8s deploy -h` for all options.
+The Helm chart includes built-in userData templates for kubeadm and RKE2 worker
+joins, selected via `cluster.type`. It can optionally create the API token Secret,
+a LambdaNodeClass, and a NodePool — all gated on values. Override with
+`nodeClass.userData` for custom cloud-init. See `charts/lambda-karpenter/values.yaml`
+for all options.
 
 ### 3. Verify
 
@@ -128,7 +119,7 @@ terminate --id <instance-id> [--confirm]
 ```
 k8s bootstrap      Launch controller, install RKE2, extract kubeconfig [--config]
 k8s kubeconfig     Extract kubeconfig from existing remote RKE2 node
-k8s deploy         Install GPU operator + lambda-karpenter + apply resources
+k8s gather         SSH into controller, populate missing cluster.yaml fields
 ```
 
 ### User management (`k8s user`)
@@ -167,7 +158,7 @@ templates:
 - `examples/bootstrap.yaml` — bootstrap controller config
 - `examples/launch.yaml` — standalone instance launch config
 - `examples/bootstrap-controller-cloud-init.yaml` — cloud-init template for RKE2
-- `examples/lambdanodeclass.yaml.tmpl` — LambdaNodeClass template (rendered at deploy time)
+- `examples/nodepool.yaml` — example NodePool
 - `examples/cluster.yaml` — reference cluster.yaml (written by bootstrap)
 
 Copy examples to `configs/` (gitignored) and customize for your cluster.
@@ -253,11 +244,10 @@ component (coredns, ingress, metrics-server, etc.).
   omitted, the NodePool's `node.kubernetes.io/instance-type` requirement drives
   instance type selection. Multiple NodePools can share one NodeClass. When set,
   the NodeClass pins to that type (backward compatible).
-- **userData supports Go templates.** Use `{{.InstanceType}}`, `{{.Region}}`,
-  `{{.ClusterName}}`, `{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`
-  in `spec.userData`. Templates are rendered at launch time. Strings without `{{`
-  pass through unchanged. For bootstrap `.tmpl` files, escape launch-time vars:
-  `{{ "{{.InstanceType}}" }}`.
+- **userData supports Go templates.** Use `{{.Region}}`, `{{.ClusterName}}`,
+  `{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}` in `spec.userData`.
+  Templates are rendered at launch time. Strings without `{{` pass through
+  unchanged.
 - Worker nodes join the cluster with `provider-id=lambda://<instance-id>`. The
   example cloud-init reads the instance ID from cloud-init metadata and strips
   dashes to match the API format.

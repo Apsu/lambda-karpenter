@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// ClusterConfig is the cluster.yaml schema written by bootstrap and read by deploy.
+// ClusterConfig is the cluster.yaml schema written by bootstrap and read by gather/kubeconfig.
 type ClusterConfig struct {
 	APIVersion  string `json:"apiVersion" yaml:"apiVersion"`
 	ClusterName string `json:"clusterName" yaml:"clusterName"`
@@ -22,12 +22,9 @@ type ClusterConfig struct {
 	JoinToken   string `json:"joinToken" yaml:"joinToken"`
 
 	Controller ClusterController `json:"controller" yaml:"controller"`
-	Versions   ClusterVersions   `json:"versions" yaml:"versions"`
 
-	Kubeconfig          string   `json:"kubeconfig" yaml:"kubeconfig"`                                         // relative to cluster dir
-	KubeconfigRemotePath string  `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"` // remote path on controller
-	NodeClassFiles      []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`             // relative to cluster dir
-	NodePoolFiles       []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`               // relative to cluster dir
+	Kubeconfig           string `json:"kubeconfig" yaml:"kubeconfig"`                                         // relative to cluster dir
+	KubeconfigRemotePath string `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"` // remote path on controller
 }
 
 type ClusterController struct {
@@ -37,23 +34,9 @@ type ClusterController struct {
 	PublicIP     string `json:"publicIP" yaml:"publicIP"`
 }
 
-type ClusterVersions struct {
-	LambdaKarpenter string `json:"lambdaKarpenter" yaml:"lambdaKarpenter"`
-}
-
 // KubeconfigPath resolves the kubeconfig path relative to clusterDir.
 func (c *ClusterConfig) KubeconfigPath(clusterDir string) string {
 	return resolvePath(clusterDir, c.Kubeconfig)
-}
-
-// ResolveNodeClassFiles resolves nodeclass file paths relative to clusterDir.
-func (c *ClusterConfig) ResolveNodeClassFiles(clusterDir string) []string {
-	return resolvePaths(clusterDir, c.NodeClassFiles)
-}
-
-// ResolveNodePoolFiles resolves nodepool file paths relative to clusterDir.
-func (c *ClusterConfig) ResolveNodePoolFiles(clusterDir string) []string {
-	return resolvePaths(clusterDir, c.NodePoolFiles)
 }
 
 // TemplateData returns a map of template variables for .tmpl rendering.
@@ -114,18 +97,6 @@ func resolvePath(base, path string) string {
 		return path
 	}
 	return filepath.Join(base, path)
-}
-
-// resolvePaths resolves a list of paths relative to a base directory.
-func resolvePaths(base string, paths []string) []string {
-	if len(paths) == 0 {
-		return nil
-	}
-	out := make([]string, len(paths))
-	for i, p := range paths {
-		out[i] = resolvePath(base, p)
-	}
-	return out
 }
 
 // relPath computes the path of target relative to base directory.

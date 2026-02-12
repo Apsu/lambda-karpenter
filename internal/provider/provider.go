@@ -352,7 +352,6 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 
 	// Render userData templates with launch-time context.
 	udCtx := userDataContext{
-		InstanceType:  instanceType,
 		Region:        class.Spec.Region,
 		ClusterName:   p.clusterName,
 		NodeClaimName: nodeClaim.Name,

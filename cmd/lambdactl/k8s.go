@@ -28,7 +28,6 @@ type K8sCmd struct {
 	Kubeconfig KubeconfigCmd `cmd:"" help:"Extract kubeconfig from existing remote RKE2 node."`
 	Gather     GatherCmd     `cmd:"" help:"SSH into controller and populate missing cluster.yaml fields (kubeconfig, internalIP)."`
 	User       UserCmd       `cmd:"" help:"Manage per-user SA + token kubeconfigs."`
-	Deploy     DeployCmd     `cmd:"" help:"Install GPU operator + lambda-karpenter + apply resources."`
 	Apply      ApplyCmd      `cmd:"" help:"Server-side apply resources."`
 	Delete     DeleteCmd     `cmd:"" help:"Delete resources."`
 	Status     StatusCmd     `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
@@ -190,12 +189,6 @@ func mustDynamic(flags K8sFlags) dynamic.Interface {
 	return loMust(dynamic.NewForConfig(cfg))
 }
 
-func mustDynamicFrom(kubeconfig, contextName string) dynamic.Interface {
-	cfg, err := k8sConfig(kubeconfig, contextName)
-	fatalIf(err)
-	return loMust(dynamic.NewForConfig(cfg))
-}
-
 func mustClientset(kubeconfig, contextName string) *kubernetes.Clientset {
 	cfg, err := k8sConfig(kubeconfig, contextName)
 	fatalIf(err)
@@ -291,35 +284,6 @@ func applyObjects(flags K8sFlags, paths []string) {
 			}
 			name := obj.GetName()
 			// Clear resourceVersion to avoid conflicts with server-side apply.
-			obj.SetResourceVersion("")
-			obj.SetManagedFields(nil)
-			_, err = res.Apply(ctx, name, obj, metav1.ApplyOptions{
-				FieldManager: "lambdactl",
-				Force:        true,
-			})
-			fatalIf(err)
-			fmt.Printf("applied %s/%s\n", obj.GetKind(), name)
-		}
-	}
-}
-
-func applyObjectsDyn(dyn dynamic.Interface, paths []string) {
-	ctx := context.Background()
-	for _, path := range paths {
-		objs, err := readUnstructured(path)
-		fatalIf(err)
-		for _, obj := range objs {
-			gvr := gvrForGVK(obj.GroupVersionKind())
-			if gvr.Resource == "" {
-				fatalf("unsupported kind %s", obj.GetKind())
-			}
-			var res dynamic.ResourceInterface
-			if ns := obj.GetNamespace(); ns != "" {
-				res = dyn.Resource(gvr).Namespace(ns)
-			} else {
-				res = dyn.Resource(gvr)
-			}
-			name := obj.GetName()
 			obj.SetResourceVersion("")
 			obj.SetManagedFields(nil)
 			_, err = res.Apply(ctx, name, obj, metav1.ApplyOptions{

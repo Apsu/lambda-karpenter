@@ -1572,7 +1572,7 @@ func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
 			Region:       "us-east-3",
 			InstanceType: "gpu_1x_gh200",
 			SSHKeyNames:  []string{"key"},
-			UserData:     "instance-type={{.InstanceType}} region={{.Region}}",
+			UserData:     "region={{.Region}} cluster={{.ClusterName}}",
 		},
 	}
 	nc := &v1.NodeClaim{
@@ -1585,7 +1585,7 @@ func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
-	if req.UserData != "instance-type=gpu_1x_gh200 region=us-east-3" {
+	if req.UserData != "region=us-east-3 cluster=my-cluster" {
 		t.Fatalf("expected rendered userData, got: %s", req.UserData)
 	}
 }

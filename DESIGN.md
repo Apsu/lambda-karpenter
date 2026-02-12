@@ -88,15 +88,11 @@ When `instanceType` is set, `GetInstanceTypes` filters to only that type and
 ### userData templating
 
 `spec.userData` supports Go `text/template` actions rendered at launch time.
-Available variables: `{{.InstanceType}}`, `{{.Region}}`, `{{.ClusterName}}`,
-`{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{`
-pass through unmodified (fast path). This enables instance-type-specific node
-labels in cloud-init without requiring a separate NodeClass per type.
-
-For deploy-time templates (`.tmpl` files passed to `deploy --nodeclass-file`),
-use Go template escaping to preserve launch-time variables:
-`{{ "{{.InstanceType}}" }}` renders to `{{.InstanceType}}` at deploy time,
-which the provider then renders at launch.
+Available variables: `{{.Region}}`, `{{.ClusterName}}`, `{{.NodeClaimName}}`,
+`{{.ImageFamily}}`, `{{.ImageID}}`. Strings without `{{` pass through unmodified
+(fast path). Node labels (instance-type, region, zone, capacity-type) are set by
+the provider on the NodeClaim and propagated to the Node by Karpenter — they do
+not need to be set in userData.
 
 ## GPU Operator Integration
 
@@ -126,22 +122,13 @@ workloads. `consolidateAfter: 60m` gives users time to submit follow-up jobs.
 
 ### Bootstrap → deploy handoff
 
-`lambdactl k8s bootstrap` writes a `cluster.yaml` file (plus kubeconfig) to a
-cluster directory (`configs/<cluster-name>/` by default). This captures all facts
+`lambdactl k8s bootstrap` writes a `cluster.yaml` file (plus kubeconfig) and a
+`lambda-karpenter-values.yaml` file to a cluster directory
+(`configs/<cluster-name>/` by default). The cluster config captures all facts
 discovered during bootstrap: cluster name, region, controller IPs, instance type,
-join token, and version defaults.
-
-`lambdactl k8s deploy --cluster-dir <dir>` reads `cluster.yaml` to populate
-cluster name, kubeconfig path, image tag, and GPU operator version. CLI flags
-and environment variables still override any value from `cluster.yaml`.
-
-### Template rendering at deploy time
-
-NodeClass and NodePool files ending in `.tmpl` are rendered at deploy time using
-data from `cluster.yaml`. This two-stage approach keeps bootstrap simple (record
-facts) and defers template rendering to deploy time where all variables are
-available. Generated files are written as `.generated.yaml` siblings (gitignored)
-and cleaned up after apply.
+and join token. The Helm values file is pre-populated with the correct
+`cluster.type`, controller IP, join token, node class, and node pool settings
+so a single `helm install -f` deploys everything.
 
 ### Multi-cluster separation
 
@@ -157,7 +144,7 @@ configs/
     kubeconfig
 ```
 
-The `--cluster-dir` flag on both `bootstrap` and `deploy` makes it easy to
+The `--cluster-dir` flag on `bootstrap` and resource commands makes it easy to
 manage multiple clusters from the same working directory.
 
 ### File permissions
