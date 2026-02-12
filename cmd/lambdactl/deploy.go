@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -13,21 +14,96 @@ import (
 )
 
 type DeployCmd struct {
-	Kubeconfig         string `name:"kubeconfig" env:"KUBECONFIG" help:"Path to kubeconfig."`
-	Context            string `name:"context" help:"Kubeconfig context to use."`
-	ClusterName        string `name:"cluster-name" env:"CLUSTER_NAME" required:"" help:"Cluster name."`
-	LambdaAPIToken     string `name:"lambda-api-token" env:"LAMBDA_API_TOKEN" required:"" help:"Lambda API token for the cluster secret."`
-	GPUValues          string `name:"gpu-values" default:"configs/gpu-operator-values.yaml" help:"Path to GPU operator values file."`
-	GPUOperatorVersion string `name:"gpu-operator-version" env:"GPU_OPERATOR_VERSION" default:"v25.10.1" help:"GPU operator Helm chart version."`
-	NodeclassFiles     []string `name:"nodeclass-file" help:"Path to nodeclass YAML (repeatable)." sep:"none"`
-	NodepoolFiles      []string `name:"nodepool-file" help:"Path to nodepool YAML (repeatable)." sep:"none"`
-	ImageTag           string `name:"image-tag" env:"VERSION" default:"latest" help:"lambda-karpenter image tag."`
-	ChartPath          string `name:"chart-path" default:"charts/lambda-karpenter" help:"Path to lambda-karpenter Helm chart."`
-	SkipGPUOperator    bool   `name:"skip-gpu-operator" help:"Skip GPU operator installation."`
-	DryRun             bool   `name:"dry-run" help:"Print commands instead of executing."`
+	Kubeconfig         string   `name:"kubeconfig" env:"KUBECONFIG" help:"Path to kubeconfig."`
+	Context            string   `name:"context" help:"Kubeconfig context to use."`
+	ClusterName        string   `name:"cluster-name" env:"CLUSTER_NAME" help:"Cluster name."`
+	ClusterDir         string   `name:"cluster-dir" help:"Path to cluster directory containing cluster.yaml."`
+	LambdaAPIToken     string   `name:"lambda-api-token" env:"LAMBDA_API_TOKEN" help:"Lambda API token for the cluster secret."`
+	TokenFile          string   `name:"token-file" help:"Path to file containing Lambda API token."`
+	GPUValues          string   `name:"gpu-values" help:"Path to GPU operator values file."`
+	GPUOperatorVersion string   `name:"gpu-operator-version" env:"GPU_OPERATOR_VERSION" default:"v25.10.1" help:"GPU operator Helm chart version."`
+	NodeclassFiles     []string `name:"nodeclass-file" help:"Path to nodeclass YAML (repeatable). Files ending in .tmpl are rendered with cluster.yaml data." sep:"none"`
+	NodepoolFiles      []string `name:"nodepool-file" help:"Path to nodepool YAML (repeatable). Files ending in .tmpl are rendered with cluster.yaml data." sep:"none"`
+	ImageTag           string   `name:"image-tag" env:"VERSION" default:"latest" help:"lambda-karpenter image tag."`
+	ChartPath          string   `name:"chart-path" default:"charts/lambda-karpenter" help:"Path to lambda-karpenter Helm chart."`
+	SkipGPUOperator    bool     `name:"skip-gpu-operator" help:"Skip GPU operator installation."`
+	DryRun             bool     `name:"dry-run" help:"Print commands instead of executing."`
 }
 
 func (c *DeployCmd) Run() error {
+	// Load cluster.yaml if --cluster-dir is provided.
+	var cc *ClusterConfig
+	if c.ClusterDir != "" {
+		var err error
+		cc, err = readClusterConfig(c.ClusterDir)
+		fatalIf(err)
+
+		// Populate fields from cluster.yaml; CLI flags still override.
+		if c.ClusterName == "" {
+			c.ClusterName = cc.ClusterName
+		}
+		// Kubeconfig from cluster.yaml takes priority when using --cluster-dir,
+		// since env vars from .env.local may point to a stale path.
+		if kp := cc.KubeconfigPath(c.ClusterDir); kp != "" {
+			c.Kubeconfig = kp
+		}
+		if c.ImageTag == "" || c.ImageTag == "latest" {
+			if cc.Versions.LambdaKarpenter != "" {
+				c.ImageTag = cc.Versions.LambdaKarpenter
+			}
+		}
+		if c.GPUOperatorVersion == "" || c.GPUOperatorVersion == "v25.10.1" {
+			if cc.Versions.GPUOperator != "" {
+				c.GPUOperatorVersion = cc.Versions.GPUOperator
+			}
+		}
+
+		// Merge nodeclass/nodepool files from cluster.yaml if none given on CLI.
+		if len(c.NodeclassFiles) == 0 {
+			c.NodeclassFiles = cc.ResolveNodeClassFiles(c.ClusterDir)
+		}
+		if len(c.NodepoolFiles) == 0 {
+			c.NodepoolFiles = cc.ResolveNodePoolFiles(c.ClusterDir)
+		}
+
+		// GPU values: CLI flag → cluster.yaml → <cluster-dir>/gpu-operator-values.yaml.
+		if c.GPUValues == "" {
+			if gp := cc.GPUValuesPath(c.ClusterDir); gp != "" {
+				c.GPUValues = gp
+			} else {
+				candidate := filepath.Join(c.ClusterDir, "gpu-operator-values.yaml")
+				if _, err := os.Stat(candidate); err == nil {
+					c.GPUValues = candidate
+				}
+			}
+		}
+	}
+
+	// Default GPU values fallback (no --cluster-dir case).
+	if c.GPUValues == "" {
+		c.GPUValues = "configs/gpu-operator-values.yaml"
+	}
+
+	// Token resolution: flag → token-file → lambda-api.key → error.
+	if c.LambdaAPIToken == "" && c.TokenFile == "" {
+		if _, err := os.Stat("lambda-api.key"); err == nil {
+			c.TokenFile = "lambda-api.key"
+		}
+	}
+	if c.LambdaAPIToken == "" && c.TokenFile != "" {
+		data, err := os.ReadFile(c.TokenFile)
+		fatalIf(err)
+		c.LambdaAPIToken = strings.TrimSpace(string(data))
+	}
+
+	// Validate required fields.
+	if c.ClusterName == "" {
+		fatalf("cluster-name is required (use --cluster-name, --cluster-dir, or CLUSTER_NAME)")
+	}
+	if c.LambdaAPIToken == "" {
+		fatalf("lambda-api-token is required (use --lambda-api-token, --token-file, or LAMBDA_API_TOKEN)")
+	}
+
 	// 1. Create karpenter namespace + lambda-api secret.
 	if !c.DryRun {
 		cs := mustClientset(c.Kubeconfig, c.Context)
@@ -99,20 +175,49 @@ func (c *DeployCmd) Run() error {
 	helmLK = appendKubeFlags(helmLK, c.Kubeconfig, c.Context)
 	runHelm(c.DryRun, helmLK)
 
-	// 4. Apply nodeclasses + nodepools.
+	// 4. Apply nodeclasses + nodepools. Render .tmpl files with cluster.yaml data.
 	var applyPaths []string
+	var generatedFiles []string
+
+	allFiles := make([]struct {
+		path string
+		kind string
+	}, 0, len(c.NodeclassFiles)+len(c.NodepoolFiles))
 	for _, f := range c.NodeclassFiles {
-		if _, err := os.Stat(f); err == nil {
-			applyPaths = append(applyPaths, f)
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: nodeclass file %s not found, skipping\n", f)
-		}
+		allFiles = append(allFiles, struct {
+			path string
+			kind string
+		}{f, "nodeclass"})
 	}
 	for _, f := range c.NodepoolFiles {
-		if _, err := os.Stat(f); err == nil {
-			applyPaths = append(applyPaths, f)
+		allFiles = append(allFiles, struct {
+			path string
+			kind string
+		}{f, "nodepool"})
+	}
+
+	for _, entry := range allFiles {
+		f := entry.path
+		if _, err := os.Stat(f); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s file %s not found, skipping\n", entry.kind, f)
+			continue
+		}
+
+		if strings.HasSuffix(f, ".tmpl") {
+			if cc == nil {
+				fatalf("--cluster-dir is required to render .tmpl file %s", f)
+			}
+			rendered, err := renderTemplate(f, cc.TemplateData())
+			fatalIf(err)
+
+			// Write to .generated.yaml sibling (gitignored).
+			genPath := strings.TrimSuffix(f, ".tmpl") + ".generated.yaml"
+			fatalIf(os.WriteFile(genPath, rendered, 0644))
+			fmt.Printf("rendered %s → %s\n", f, genPath)
+			applyPaths = append(applyPaths, genPath)
+			generatedFiles = append(generatedFiles, genPath)
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: nodepool file %s not found, skipping\n", f)
+			applyPaths = append(applyPaths, f)
 		}
 	}
 
@@ -125,6 +230,11 @@ func (c *DeployCmd) Run() error {
 			dyn := mustDynamicFrom(c.Kubeconfig, c.Context)
 			applyObjectsDyn(dyn, applyPaths)
 		}
+	}
+
+	// Clean up generated files.
+	for _, f := range generatedFiles {
+		os.Remove(f)
 	}
 
 	fmt.Println("deploy complete")

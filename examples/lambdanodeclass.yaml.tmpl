@@ -35,7 +35,7 @@ spec:
           INSTANCE_ID="$(echo "$INSTANCE_ID" | tr -d '-')"
           cat <<CFG > /etc/rancher/rke2/config.yaml
           server: https://{{.ControllerIP}}:9345
-          token: {{.RKE2Token}}
+          token: {{.JoinToken}}
           kubelet-arg:
             - provider-id=lambda://${INSTANCE_ID}
           node-label:

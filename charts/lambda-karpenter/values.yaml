@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: apsu/lambda-karpenter
-  tag: "0.3.0"
+  tag: "v0.3.1"
   pullPolicy: IfNotPresent
 
 replicaCount: 1

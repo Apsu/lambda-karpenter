@@ -93,9 +93,10 @@ Available variables: `{{.InstanceType}}`, `{{.Region}}`, `{{.ClusterName}}`,
 pass through unmodified (fast path). This enables instance-type-specific node
 labels in cloud-init without requiring a separate NodeClass per type.
 
-For bootstrap-time templates (`.tmpl` files), use Go template escaping to
-preserve launch-time variables: `{{ "{{.InstanceType}}" }}` renders to
-`{{.InstanceType}}` at bootstrap, which the provider then renders at launch.
+For deploy-time templates (`.tmpl` files passed to `deploy --nodeclass-file`),
+use Go template escaping to preserve launch-time variables:
+`{{ "{{.InstanceType}}" }}` renders to `{{.InstanceType}}` at deploy time,
+which the provider then renders at launch.
 
 ## GPU Operator Integration
 
@@ -118,6 +119,51 @@ that haven't finished registering yet.
 
 GPU NodePools use `WhenEmpty` consolidation to avoid disrupting running GPU
 workloads. `consolidateAfter: 60m` gives users time to submit follow-up jobs.
+
+---
+
+## Cluster Configuration (`cluster.yaml`)
+
+### Bootstrap → deploy handoff
+
+`lambdactl k8s bootstrap` writes a `cluster.yaml` file (plus kubeconfig) to a
+cluster directory (`configs/<cluster-name>/` by default). This captures all facts
+discovered during bootstrap: cluster name, region, controller IPs, instance type,
+join token, and version defaults.
+
+`lambdactl k8s deploy --cluster-dir <dir>` reads `cluster.yaml` to populate
+cluster name, kubeconfig path, image tag, and GPU operator version. CLI flags
+and environment variables still override any value from `cluster.yaml`.
+
+### Template rendering at deploy time
+
+NodeClass and NodePool files ending in `.tmpl` are rendered at deploy time using
+data from `cluster.yaml`. This two-stage approach keeps bootstrap simple (record
+facts) and defers template rendering to deploy time where all variables are
+available. Generated files are written as `.generated.yaml` siblings (gitignored)
+and cleaned up after apply.
+
+### Multi-cluster separation
+
+Each cluster gets its own directory under `configs/`:
+
+```
+configs/
+  cluster-a/
+    cluster.yaml
+    kubeconfig
+  cluster-b/
+    cluster.yaml
+    kubeconfig
+```
+
+The `--cluster-dir` flag on both `bootstrap` and `deploy` makes it easy to
+manage multiple clusters from the same working directory.
+
+### File permissions
+
+`cluster.yaml` is written with `0600` permissions because it contains the
+join token. The Lambda API token is never stored in `cluster.yaml`.
 
 ---
 

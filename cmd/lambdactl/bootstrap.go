@@ -17,55 +17,44 @@ import (
 
 // BootstrapConfig is the YAML config file format for bootstrap.
 type BootstrapConfig struct {
-	ClusterName       string `json:"clusterName" yaml:"clusterName"`
-	Region            string `json:"region" yaml:"region"`
-	InstanceType      string `json:"instanceType" yaml:"instanceType"`
-	ImageFamily       string `json:"imageFamily" yaml:"imageFamily"`
-	SSHKeyName        string `json:"sshKeyName" yaml:"sshKeyName"`
-	SSHKeyPath        string `json:"sshKeyPath" yaml:"sshKeyPath"`
-	SSHUser           string `json:"sshUser" yaml:"sshUser"`
-	CloudInit         string `json:"cloudInit" yaml:"cloudInit"`
-	RKE2Token         string `json:"rke2Token" yaml:"rke2Token"`
-	KubeconfigOut     string `json:"kubeconfigOut" yaml:"kubeconfigOut"`
-	NodeclassOut      string `json:"nodeclassOut" yaml:"nodeclassOut"`
-	NodeclassTemplate string `json:"nodeclassTemplate" yaml:"nodeclassTemplate"`
-}
-
-// templateData is the context available to all Go templates rendered by bootstrap.
-type templateData struct {
-	ClusterName  string
-	Region       string
-	InstanceType string
-	ImageFamily  string
-	SSHKeyName   string
-	RKE2Token    string
-	ControllerIP string // internal IP, populated after SSH
+	ClusterName    string   `json:"clusterName" yaml:"clusterName"`
+	Region         string   `json:"region" yaml:"region"`
+	InstanceType   string   `json:"instanceType" yaml:"instanceType"`
+	ImageFamily    string   `json:"imageFamily" yaml:"imageFamily"`
+	SSHKeyName     string   `json:"sshKeyName" yaml:"sshKeyName"`
+	SSHKeyPath     string   `json:"sshKeyPath" yaml:"sshKeyPath"`
+	SSHUser        string   `json:"sshUser" yaml:"sshUser"`
+	CloudInit      string   `json:"cloudInit" yaml:"cloudInit"`
+	JoinToken      string   `json:"joinToken" yaml:"joinToken"`
+	NodeClassFiles []string `json:"nodeClassFiles,omitempty" yaml:"nodeClassFiles,omitempty"`
+	NodePoolFiles  []string `json:"nodePoolFiles,omitempty" yaml:"nodePoolFiles,omitempty"`
+	GPUValues      string   `json:"gpuValues,omitempty" yaml:"gpuValues,omitempty"`
 }
 
 type BootstrapCmd struct {
 	APIFlags
-	Config            string        `name:"config" help:"Path to YAML config."`
-	Region            string        `name:"region" help:"Lambda Cloud region."`
-	InstanceType      string        `name:"instance-type" help:"Instance type."`
-	ImageFamily       string        `name:"image-family" help:"Image family."`
-	SSHKey            string        `name:"ssh-key" help:"Lambda SSH key name."`
-	SSHKeyPath        string        `name:"ssh-key-path" help:"Path to local SSH private key."`
-	SSHUser           string        `name:"ssh-user" help:"SSH username (default ubuntu)."`
-	CloudInit         string        `name:"cloud-init" help:"Path to cloud-init template."`
-	RKE2Token         string        `name:"rke2-token" help:"RKE2 join token."`
-	ClusterName       string        `name:"cluster-name" help:"Cluster name."`
-	KubeconfigOut     string        `name:"kubeconfig-out" help:"Output kubeconfig path (default CLUSTER_NAME.kubeconfig)."`
-	NodeclassOut      string        `name:"nodeclass-out" help:"Output nodeclass YAML path (default configs/lambdanodeclass.yaml)."`
-	NodeclassTemplate string        `name:"nodeclass-template" help:"Path to nodeclass YAML template."`
-	Timeout           time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
+	Config       string        `name:"config" help:"Path to YAML config."`
+	Region       string        `name:"region" help:"Lambda Cloud region."`
+	InstanceType string        `name:"instance-type" help:"Instance type."`
+	ImageFamily  string        `name:"image-family" help:"Image family."`
+	SSHKey       string        `name:"ssh-key" help:"Lambda SSH key name."`
+	SSHKeyPath   string        `name:"ssh-key-path" help:"Path to local SSH private key."`
+	SSHUser      string        `name:"ssh-user" help:"SSH username (default ubuntu)."`
+	CloudInit    string        `name:"cloud-init" help:"Path to cloud-init template."`
+	JoinToken    string        `name:"join-token" help:"Cluster join token."`
+	ClusterName  string        `name:"cluster-name" help:"Cluster name."`
+	ClusterDir   string        `name:"cluster-dir" help:"Output directory for cluster.yaml and kubeconfig (default configs/<cluster-name>/)."`
+	Timeout      time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
 }
 
 func (c *BootstrapCmd) Run() error {
 	var cfg BootstrapConfig
+	var configDir string // directory containing the config file, for relative path resolution
 	if c.Config != "" {
 		data, err := os.ReadFile(c.Config)
 		fatalIf(err)
 		fatalIf(yaml.Unmarshal(data, &cfg))
+		configDir = filepath.Dir(c.Config)
 	}
 
 	// CLI flags override config values.
@@ -77,20 +66,11 @@ func (c *BootstrapCmd) Run() error {
 	applyStringOverride(&cfg.SSHKeyPath, c.SSHKeyPath)
 	applyStringOverride(&cfg.SSHUser, c.SSHUser)
 	applyStringOverride(&cfg.CloudInit, c.CloudInit)
-	applyStringOverride(&cfg.RKE2Token, c.RKE2Token)
-	applyStringOverride(&cfg.KubeconfigOut, c.KubeconfigOut)
-	applyStringOverride(&cfg.NodeclassOut, c.NodeclassOut)
-	applyStringOverride(&cfg.NodeclassTemplate, c.NodeclassTemplate)
+	applyStringOverride(&cfg.JoinToken, c.JoinToken)
 
 	// Apply defaults.
 	if cfg.SSHUser == "" {
 		cfg.SSHUser = "ubuntu"
-	}
-	if cfg.NodeclassOut == "" {
-		cfg.NodeclassOut = "configs/lambdanodeclass.yaml"
-	}
-	if cfg.KubeconfigOut == "" {
-		cfg.KubeconfigOut = cfg.ClusterName + ".kubeconfig"
 	}
 
 	// Validate required fields.
@@ -112,8 +92,31 @@ func (c *BootstrapCmd) Run() error {
 	if cfg.CloudInit == "" {
 		fatalf("cloud-init is required")
 	}
-	if cfg.RKE2Token == "" {
-		fatalf("rke2-token is required")
+	if cfg.JoinToken == "" {
+		fatalf("join-token is required")
+	}
+
+	// Compute cluster dir.
+	clusterDir := c.ClusterDir
+	if clusterDir == "" {
+		clusterDir = filepath.Join("configs", cfg.ClusterName)
+	}
+
+	// Resolve relative paths in config file against the config file's directory.
+	if configDir != "" {
+		cfg.CloudInit = resolvePath(configDir, cfg.CloudInit)
+		cfg.NodeClassFiles = resolvePaths(configDir, cfg.NodeClassFiles)
+		cfg.NodePoolFiles = resolvePaths(configDir, cfg.NodePoolFiles)
+		cfg.GPUValues = resolvePath(configDir, cfg.GPUValues)
+	}
+
+	// Build partial ClusterConfig for template rendering.
+	cc := &ClusterConfig{
+		ClusterName: cfg.ClusterName,
+		Region:      cfg.Region,
+		ImageFamily: cfg.ImageFamily,
+		SSHKeyName:  cfg.SSHKeyName,
+		JoinToken:   cfg.JoinToken,
 	}
 
 	client := c.mustClient()
@@ -121,17 +124,8 @@ func (c *BootstrapCmd) Run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	td := templateData{
-		ClusterName:  cfg.ClusterName,
-		Region:       cfg.Region,
-		InstanceType: cfg.InstanceType,
-		ImageFamily:  cfg.ImageFamily,
-		SSHKeyName:   cfg.SSHKeyName,
-		RKE2Token:    cfg.RKE2Token,
-	}
-
 	// 1. Render cloud-init template.
-	userData, err := renderTemplate(cfg.CloudInit, td)
+	userData, err := renderTemplate(cfg.CloudInit, cc.TemplateData())
 	fatalIf(err)
 
 	// 2. Launch instance.
@@ -245,24 +239,42 @@ func (c *BootstrapCmd) Run() error {
 	fatalIf(err)
 	internalIP = strings.TrimSpace(internalIP)
 
-	// 8. Write kubeconfig.
-	fatalIf(writeKubeconfigFile(cfg.KubeconfigOut, data))
-	fmt.Printf("kubeconfig written to %s\n", cfg.KubeconfigOut)
-	fmt.Printf("export KUBECONFIG=%s\n", cfg.KubeconfigOut)
+	// 8. Write kubeconfig to cluster dir.
+	kubeconfigPath := filepath.Join(clusterDir, "kubeconfig")
+	fatalIf(os.MkdirAll(clusterDir, 0755))
+	fatalIf(writeKubeconfigFile(kubeconfigPath, data))
+	fmt.Printf("kubeconfig written to %s\n", kubeconfigPath)
+	fmt.Printf("export KUBECONFIG=%s\n", kubeconfigPath)
 
-	// 9. Generate nodeclass YAML if template provided.
-	if cfg.NodeclassTemplate != "" {
-		if internalIP == "" {
-			fmt.Fprintln(os.Stderr, "warning: could not determine internal IP; nodeclass not generated")
-		} else {
-			td.ControllerIP = internalIP
-			rendered, err := renderTemplate(cfg.NodeclassTemplate, td)
-			fatalIf(err)
-			fatalIf(os.MkdirAll(filepath.Dir(cfg.NodeclassOut), 0755))
-			fatalIf(os.WriteFile(cfg.NodeclassOut, rendered, 0644))
-			fmt.Printf("nodeclass written to %s\n", cfg.NodeclassOut)
-		}
+	// 9. Write cluster.yaml with all discovered facts.
+	cc.Controller = ClusterController{
+		InstanceID:   instanceID,
+		InstanceType: cfg.InstanceType,
+		InternalIP:   internalIP,
+		PublicIP:     publicIP,
 	}
+	cc.Versions = ClusterVersions{
+		GPUOperator:     os.Getenv("GPU_OPERATOR_VERSION"),
+		LambdaKarpenter: os.Getenv("VERSION"),
+	}
+	cc.Kubeconfig = "kubeconfig"
+
+	// Store file paths relative to the cluster dir.
+	for _, f := range cfg.NodeClassFiles {
+		cc.NodeClassFiles = append(cc.NodeClassFiles, relPath(clusterDir, f))
+	}
+	for _, f := range cfg.NodePoolFiles {
+		cc.NodePoolFiles = append(cc.NodePoolFiles, relPath(clusterDir, f))
+	}
+	if cfg.GPUValues != "" {
+		cc.GPUValues = relPath(clusterDir, cfg.GPUValues)
+	}
+
+	fatalIf(writeClusterConfig(clusterDir, cc))
+	fmt.Printf("cluster config written to %s/cluster.yaml\n", clusterDir)
+	fmt.Println()
+	fmt.Println("next steps:")
+	fmt.Printf("  lambdactl k8s deploy --cluster-dir %s\n", clusterDir)
 
 	return nil
 }

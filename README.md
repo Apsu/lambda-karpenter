@@ -51,7 +51,7 @@ Then launch the controller:
 ```bash
 lambdactl k8s bootstrap \
   --config configs/bootstrap.yaml \
-  --rke2-token <token>
+  --join-token <token>
 ```
 
 The config file specifies region, instance type, SSH key, cloud-init template, and
@@ -63,7 +63,11 @@ This will:
 1. Launch the instance and wait for it to become active
 2. SSH in and wait for RKE2 to generate `/etc/rancher/rke2/rke2.yaml`
 3. Download and rewrite the kubeconfig (server address, cluster name)
-4. Optionally render a LambdaNodeClass from a template
+4. Write `cluster.yaml` and `kubeconfig` to `configs/<cluster-name>/`
+
+The `cluster.yaml` file records all discovered facts (controller IPs, instance
+type, region, join token, versions) for use by `deploy`. See
+`examples/cluster.yaml` for the full schema.
 
 ### 2. Deploy the stack
 
@@ -71,7 +75,26 @@ Install the GPU operator, lambda-karpenter Helm chart, and apply NodeClass + Nod
 
 ```bash
 lambdactl k8s deploy \
+  --cluster-dir configs/my-cluster \
+  --nodeclass-file examples/lambdanodeclass.yaml.tmpl \
+  --nodepool-file examples/nodepool.yaml
+```
+
+When `--cluster-dir` is provided, deploy reads `cluster.yaml` for cluster name,
+kubeconfig path, image tag, and GPU operator version. CLI flags and environment
+variables still override.
+
+Files ending in `.tmpl` are rendered with data from `cluster.yaml` before apply.
+This supports two-stage templating where deploy-time variables (e.g. `{{.Region}}`,
+`{{.ControllerIP}}`) resolve from cluster.yaml while launch-time variables
+(e.g. `{{.InstanceType}}`) pass through for the provider to render.
+
+Deploy also works without `--cluster-dir` using explicit flags:
+
+```bash
+lambdactl k8s deploy \
   --cluster-name my-cluster \
+  --lambda-api-token <token> \
   --nodeclass-file configs/lambdanodeclass.yaml \
   --nodepool-file configs/nodepool.yaml
 ```
@@ -144,9 +167,11 @@ templates:
 - `examples/bootstrap.yaml` — bootstrap controller config
 - `examples/launch.yaml` — standalone instance launch config
 - `examples/bootstrap-controller-cloud-init.yaml` — cloud-init template for RKE2
-- `examples/lambdanodeclass.yaml` — LambdaNodeClass template (Go `text/template`)
+- `examples/lambdanodeclass.yaml.tmpl` — LambdaNodeClass template (rendered at deploy time)
+- `examples/cluster.yaml` — reference cluster.yaml (written by bootstrap)
 
 Copy examples to `configs/` (gitignored) and customize for your cluster.
+Bootstrap writes cluster config to `configs/<cluster-name>/`.
 
 ## Development
 

@@ -1,0 +1,31 @@
+# Example cluster.yaml — written by `lambdactl k8s bootstrap`.
+# This file captures all facts discovered during bootstrap so that
+# `lambdactl k8s deploy --cluster-dir <dir>` can read them back.
+#
+# File permissions should be 0600 (contains joinToken).
+# Do NOT store the Lambda API token here — use --token-file or env vars.
+
+apiVersion: lambdactl/v1alpha1
+clusterName: my-cluster
+region: us-east-3
+imageFamily: lambda-stack-24-04
+sshKeyName: my-key
+joinToken: my-join-token
+
+controller:
+  instanceID: abc123def456
+  instanceType: gpu_1x_gh200
+  internalIP: 172.26.135.154
+  publicIP: 203.0.113.42
+
+versions:
+  gpuOperator: v25.10.1
+  lambdaKarpenter: "0.3.0"
+
+# All paths are relative to the cluster directory.
+kubeconfig: kubeconfig
+nodeClassFiles:
+  - nodeclass-gh200.yaml.tmpl
+nodePoolFiles:
+  - nodepool-gh200.yaml
+gpuValues: gpu-operator-values.yaml
