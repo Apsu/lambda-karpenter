@@ -33,11 +33,15 @@ Karpenter v1.9.0's `NodeClaimStatus` does not have an `Addresses` field.
 Nodes register with the API server via hostname matching during the kubelet
 join process. No provider-side address population is needed or possible.
 
-### Image resolution is pass-through
+### Image resolution via API
 
-`spec.image.id` → `status.resolvedImageID` and `spec.image.family` →
-`status.resolvedImageFamily` are echoed directly. Full API-based resolution
-(family → ID lookup) is deferred until Lambda exposes an Images API.
+The controller resolves `spec.image.family` + region to a concrete image ID
+using the Lambda Images API. The `ImageCache` (singleflight + TTL) fetches all
+images, and the controller picks the latest match by `updated_time`, storing the
+result in `status.resolvedImageID` and `status.resolvedImageFamily`. When
+`spec.image.id` is set directly, resolution is skipped. The provider reads from
+status (already resolved) — no API calls in the hot path. Drift detection
+compares the launch-time image against the current resolved ID.
 
 ### Tag-based idempotency
 
@@ -64,11 +68,12 @@ CRD YAML and DeepCopy methods are hand-written. The schema is simple enough
 that controller-gen adds complexity without value. CRDs are bundled in the Helm
 `crds/` directory (install-only, never deleted on uninstall).
 
-### InstanceTypeSelector declared but rejected
+### InstanceTypeSelector filtering
 
-The `instanceTypeSelector` field exists in the LambdaNodeClass type for future
-use but validation rejects any non-empty value with a clear error. This avoids
-silent misconfiguration while preserving the schema for forward compatibility.
+The `instanceTypeSelector` field on LambdaNodeClass filters which Lambda
+instance types are eligible for provisioning. When set, `GetInstanceTypes()`
+only returns types whose name appears in the selector list. When empty or nil,
+all instance types are returned (default behavior).
 
 ---
 
@@ -186,5 +191,5 @@ place.
 
 ### Full documentation
 
-- Deployment sequence: `lambdactl k8s bootstrap` → `lambdactl k8s deploy` →
-  `lambdactl k8s apply`. See README.md for the current workflow.
+- Deployment sequence: `lambdactl k8s bootstrap` → `helm install`. See
+  README.md for the current workflow.
