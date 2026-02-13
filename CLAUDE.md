@@ -34,7 +34,7 @@ go run ./cmd/lambdactl list-instance-types
 
 Two binaries:
 - **`cmd/manager`** — Karpenter controller-manager (production). Creates the Lambda API client, rate limiter, instance type cache, instance list cache, and CloudProvider, then starts the Karpenter operator with all standard controllers.
-- **`cmd/lambdactl`** — CLI for the full cluster lifecycle: bootstrap controller nodes, extract kubeconfig, deploy the stack, manage per-user credentials, and interact with the Lambda API. Loads `.env` + `.env.local` via godotenv at startup. Uses server-side apply for `k8s apply`.
+- **`cmd/lambdactl`** — CLI for the full cluster lifecycle: bootstrap controller nodes, extract kubeconfig, manage per-user credentials, and interact with the Lambda API (instances, SSH keys, filesystems, firewalls). Loads `.env` + `.env.local` via godotenv at startup.
 
 ### Core packages (`internal/`)
 

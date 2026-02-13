@@ -97,7 +97,6 @@ for all options.
 
 ```bash
 lambdactl k8s status
-lambdactl k8s nodeclaims
 ```
 
 ## lambdactl
@@ -120,6 +119,8 @@ terminate --id <instance-id> [--confirm]
 k8s bootstrap      Launch controller, install RKE2, extract kubeconfig [--config]
 k8s kubeconfig     Extract kubeconfig from existing remote RKE2 node
 k8s gather         SSH into controller, populate missing cluster.yaml fields
+k8s status         Show LambdaNodeClass, NodePool, NodeClaim status
+k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
 ```
 
 ### User management (`k8s user`)
@@ -130,15 +131,35 @@ k8s user rotate    Rotate token in existing user kubeconfig
 k8s user cleanup   Delete user ServiceAccount + ClusterRoleBinding
 ```
 
-### Resource management (`k8s`)
+### SSH key management (`ssh-key`)
 
 ```
-k8s apply          Server-side apply resources (--nodeclass, --nodepool, --pod)
-k8s delete         Delete resources (--nodeclass, --nodepool, --nodeclaim)
-k8s status         Show LambdaNodeClass, NodePool, NodeClaim status
-k8s nodeclaims     List NodeClaim details
-k8s wait           Wait for NodeClaim to be ready (--nodeclaim, --timeout)
+ssh-key list       List SSH keys
+ssh-key add        Add an SSH key (--name, --public-key or --public-key-file)
+ssh-key delete     Delete an SSH key (--id)
 ```
+
+### Filesystem management (`filesystem`)
+
+```
+filesystem list    List filesystems
+filesystem create  Create a filesystem (--name, --region)
+filesystem delete  Delete a filesystem (--id)
+```
+
+### Firewall management (`firewall`)
+
+```
+firewall list          List firewall rulesets
+firewall get           Get firewall ruleset details (--id)
+firewall create        Create a firewall ruleset (--name, --region, --rule)
+firewall update        Update a firewall ruleset (--id, --name, --rule)
+firewall delete        Delete a firewall ruleset (--id)
+firewall global        Get global firewall rules
+firewall global-update Update global firewall rules (--rule)
+```
+
+Rules use `proto:ports:source:description` format (e.g., `tcp:22:0.0.0.0/0:SSH`).
 
 ### Common flags
 

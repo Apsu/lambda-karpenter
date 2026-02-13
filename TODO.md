@@ -6,9 +6,6 @@ Design decisions and rationale are documented in DESIGN.md.
 
 ## Open
 
-- [ ] **Deploy config file** — Add `--config` YAML overlay support to `k8s deploy`,
-  matching the pattern in `launch` and `k8s bootstrap`.
-
 - [ ] **Version flag** — Add `lambdactl --version` using Kong's version support
   and build-time `ldflags`.
 
@@ -22,7 +19,24 @@ Design decisions and rationale are documented in DESIGN.md.
 
 ## Completed
 
-### v0.4.0 (in progress)
+### v0.5.0 (in progress)
+
+- [x] **InstanceTypeSelector** — NodeClass `instanceTypeSelector` filters eligible
+  instance types in `GetInstanceTypes()`.
+- [x] **Filesystem mounts** — NodeClass `fileSystemNames` and `fileSystemMounts`
+  wired through to `LaunchRequest`.
+- [x] **Image family resolution** — Controller resolves `image.family` + region to
+  a concrete image ID via the Lambda Images API (`ImageCache`).
+- [x] **UserData from ConfigMap** — `userDataFrom` sources userData from ConfigMap
+  references with hash-based drift detection.
+- [x] **EKS hybrid support** — Helm chart renders `nodeadm`-based userData
+  templates for EKS hybrid clusters via `cluster.type: eks-hybrid`.
+- [x] **Lambda API commands** — Added `ssh-key`, `filesystem`, and `firewall`
+  command groups to lambdactl.
+- [x] **Trim k8s commands** — Removed redundant `k8s apply`, `k8s delete`, and
+  `k8s nodeclaims` commands (overlapped with kubectl/Helm).
+
+### v0.4.0
 
 - [x] **Kong CLI refactor** — Migrated lambdactl from manual `flag.NewFlagSet` +
   `switch` dispatch to `alecthomas/kong` struct-tag CLI framework. Removed all
