@@ -1,5 +1,5 @@
 {{/*
-Resolve instance ID — shared helper used by both kubeadm and rke2 templates.
+Resolve instance ID — shared helper used by kubeadm, rke2, and eks-hybrid templates.
 Reads cloud-init instance-id and strips dashes to match Lambda API format.
 */}}
 {{- define "lambda-karpenter.resolveInstanceID" -}}
@@ -80,11 +80,50 @@ runcmd:
 {{- end -}}
 
 {{/*
+EKS hybrid node registration user-data using nodeadm.
+*/}}
+{{- define "lambda-karpenter.userData.eks-hybrid" -}}
+#cloud-config
+package_update: true
+package_upgrade: false
+
+runcmd:
+  # Install nodeadm for EKS hybrid node registration.
+  - curl -fsSL "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm" -o /usr/local/bin/nodeadm
+  - chmod +x /usr/local/bin/nodeadm
+
+  # Write nodeadm configuration.
+  - |
+      {{ include "lambda-karpenter.resolveInstanceID" . | nindent 6 }}
+      mkdir -p /etc/eks
+      cat <<CFG > /etc/eks/nodeadm-config.yaml
+      apiVersion: node.eks.aws/v1alpha1
+      kind: NodeConfig
+      spec:
+        cluster:
+          name: {{ required "cluster.eksClusterName is required for eks-hybrid" .Values.cluster.eksClusterName }}
+          region: {{ required "cluster.eksRegion is required for eks-hybrid" .Values.cluster.eksRegion }}
+        hybrid:
+          ssm:
+            activationCode: {{ required "cluster.eksSSMActivationCode is required for eks-hybrid" .Values.cluster.eksSSMActivationCode }}
+            activationId: {{ required "cluster.eksSSMActivationID is required for eks-hybrid" .Values.cluster.eksSSMActivationID }}
+        kubelet:
+          flags:
+            - --provider-id=lambda://${INSTANCE_ID}
+      CFG
+
+  # Register the node with EKS.
+  - /usr/local/bin/nodeadm init --config-source file:///etc/eks/nodeadm-config.yaml
+{{- end -}}
+
+{{/*
 Dispatcher — selects user-data template based on cluster.type.
 */}}
 {{- define "lambda-karpenter.defaultUserData" -}}
 {{- if eq .Values.cluster.type "rke2" -}}
 {{ include "lambda-karpenter.userData.rke2" . }}
+{{- else if eq .Values.cluster.type "eks-hybrid" -}}
+{{ include "lambda-karpenter.userData.eks-hybrid" . }}
 {{- else -}}
 {{ include "lambda-karpenter.userData.kubeadm" . }}
 {{- end -}}

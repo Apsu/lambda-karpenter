@@ -53,13 +53,14 @@ func main() {
 	}
 
 	cache := lambdaclient.NewInstanceTypeCache(lambdaAPI, cfg.InstanceTypeCacheTTL)
+	imageCache := lambdaclient.NewImageCache(lambdaAPI, cfg.InstanceTypeCacheTTL)
 	listCache := lambdaclient.NewInstanceListCache(lambdaAPI, 5*time.Second)
 	unavailableOfferings := provider.NewUnavailableOfferings(cfg.UnavailableOfferingsTTL)
 	cloudProvider := provider.New(op.GetClient(), lambdaAPI, listCache, cache, unavailableOfferings, cfg.ClusterName, log.Log)
 	overlayProvider := overlay.Decorate(cloudProvider, op.GetClient(), op.InstanceTypeStore)
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), overlayProvider)
 
-	if err := (&controller.LambdaNodeClassReconciler{Client: op.GetClient()}).SetupWithManager(op.Manager); err != nil {
+	if err := (&controller.LambdaNodeClassReconciler{Client: op.GetClient(), ImageResolver: imageCache}).SetupWithManager(op.Manager); err != nil {
 		log.Log.Error(err, "unable to create LambdaNodeClass controller")
 		os.Exit(1)
 	}

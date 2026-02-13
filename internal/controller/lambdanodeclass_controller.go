@@ -2,20 +2,31 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
+	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// ImageResolver resolves image families to concrete image IDs.
+type ImageResolver interface {
+	ListImages(ctx context.Context) ([]lambdaclient.Image, error)
+}
+
 // LambdaNodeClassReconciler validates LambdaNodeClass resources.
 type LambdaNodeClassReconciler struct {
 	client.Client
+	ImageResolver ImageResolver
 }
 
 func (r *LambdaNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -33,14 +44,15 @@ func (r *LambdaNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		cond.SetTrue(status.ConditionReady)
 	}
 
-	// Populate image resolution status (pass-through for now).
-	// TODO: Actual resolution (family→ID) requires calling the Lambda Images API.
-	if nc.Spec.Image != nil {
-		nc.Status.ResolvedImageID = nc.Spec.Image.ID
-		nc.Status.ResolvedImageFamily = nc.Spec.Image.Family
-	} else {
-		nc.Status.ResolvedImageID = ""
-		nc.Status.ResolvedImageFamily = ""
+	// Resolve image: if family is set and we have an ImageResolver, resolve to concrete ID.
+	if err := r.resolveImage(ctx, &nc); err != nil {
+		logger.Error(err, "image resolution failed", "name", nc.Name)
+	}
+
+	// Resolve userDataFrom: fetch ConfigMap contents, concatenate, compute hash.
+	if err := r.resolveUserData(ctx, &nc); err != nil {
+		logger.Error(err, "userData resolution failed", "name", nc.Name)
+		cond.SetFalse(status.ConditionReady, "UserDataResolutionFailed", err.Error())
 	}
 
 	now := metav1.NewTime(time.Now())
@@ -52,6 +64,95 @@ func (r *LambdaNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	logger.Info("reconciled LambdaNodeClass", "name", nc.Name, "ready", cond.IsTrue(status.ConditionReady))
 	return ctrl.Result{}, nil
+}
+
+func (r *LambdaNodeClassReconciler) resolveImage(ctx context.Context, nc *v1alpha1.LambdaNodeClass) error {
+	if nc.Spec.Image == nil {
+		nc.Status.ResolvedImageID = ""
+		nc.Status.ResolvedImageFamily = ""
+		return nil
+	}
+
+	if nc.Spec.Image.ID != "" {
+		nc.Status.ResolvedImageID = nc.Spec.Image.ID
+		nc.Status.ResolvedImageFamily = ""
+		return nil
+	}
+
+	if nc.Spec.Image.Family != "" && r.ImageResolver != nil {
+		images, err := r.ImageResolver.ListImages(ctx)
+		if err != nil {
+			nc.Status.ResolvedImageID = ""
+			nc.Status.ResolvedImageFamily = nc.Spec.Image.Family
+			return err
+		}
+
+		imageID := resolveLatestImageByFamily(images, nc.Spec.Image.Family, nc.Spec.Region)
+		if imageID != "" {
+			nc.Status.ResolvedImageID = imageID
+		} else {
+			nc.Status.ResolvedImageID = ""
+		}
+		nc.Status.ResolvedImageFamily = nc.Spec.Image.Family
+		return nil
+	}
+
+	nc.Status.ResolvedImageID = ""
+	nc.Status.ResolvedImageFamily = nc.Spec.Image.Family
+	return nil
+}
+
+func (r *LambdaNodeClassReconciler) resolveUserData(ctx context.Context, nc *v1alpha1.LambdaNodeClass) error {
+	if len(nc.Spec.UserDataFrom) == 0 {
+		nc.Status.ResolvedUserData = ""
+		nc.Status.ResolvedUserDataHash = ""
+		return nil
+	}
+
+	var parts []string
+	for i, src := range nc.Spec.UserDataFrom {
+		if src.Inline != "" {
+			parts = append(parts, src.Inline)
+		} else if src.ConfigMapRef != nil {
+			ref := src.ConfigMapRef
+			var cm corev1.ConfigMap
+			if err := r.Client.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &cm); err != nil {
+				return fmt.Errorf("userDataFrom[%d]: configMapRef %s/%s: %w", i, ref.Namespace, ref.Name, err)
+			}
+			val, ok := cm.Data[ref.Key]
+			if !ok {
+				return fmt.Errorf("userDataFrom[%d]: key %q not found in configmap %s/%s", i, ref.Key, ref.Namespace, ref.Name)
+			}
+			parts = append(parts, val)
+		}
+	}
+
+	resolved := strings.Join(parts, "\n")
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(resolved)))
+
+	nc.Status.ResolvedUserData = resolved
+	nc.Status.ResolvedUserDataHash = hash
+	return nil
+}
+
+// resolveLatestImageByFamily finds the latest image matching the given family and region.
+func resolveLatestImageByFamily(images []lambdaclient.Image, family, region string) string {
+	var bestID string
+	var bestTime time.Time
+
+	for _, img := range images {
+		if img.Family != family {
+			continue
+		}
+		if region != "" && img.Region.Name != "" && img.Region.Name != region {
+			continue
+		}
+		if img.UpdatedTime.After(bestTime) {
+			bestTime = img.UpdatedTime
+			bestID = img.ID
+		}
+	}
+	return bestID
 }
 
 func (r *LambdaNodeClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -74,8 +175,8 @@ func validateNodeClass(nc *v1alpha1.LambdaNodeClass) error {
 			return fmt.Errorf("spec.image must set exactly one of id or family")
 		}
 	}
-	if len(nc.Spec.InstanceTypeSelector) > 0 {
-		return fmt.Errorf("spec.instanceTypeSelector is not yet supported")
+	if nc.Spec.UserData != "" && len(nc.Spec.UserDataFrom) > 0 {
+		return fmt.Errorf("spec.userData and spec.userDataFrom are mutually exclusive")
 	}
 	return nil
 }

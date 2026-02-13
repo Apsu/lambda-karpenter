@@ -67,18 +67,58 @@ spec:
                   type: array
                   items:
                     type: string
+                fileSystemNames:
+                  type: array
+                  items:
+                    type: string
+                fileSystemMounts:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - mountPoint
+                      - fileSystemID
+                    properties:
+                      mountPoint:
+                        type: string
+                      fileSystemID:
+                        type: string
                 tags:
                   type: object
                   additionalProperties:
                     type: string
                 userData:
                   type: string
+                userDataFrom:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      inline:
+                        type: string
+                      configMapRef:
+                        type: object
+                        required:
+                          - name
+                          - namespace
+                          - key
+                        properties:
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          key:
+                            type: string
             status:
               type: object
               properties:
                 resolvedImageID:
                   type: string
                 resolvedImageFamily:
+                  type: string
+                resolvedUserData:
+                  type: string
+                resolvedUserDataHash:
                   type: string
                 lastValidatedAt:
                   type: string

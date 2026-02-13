@@ -1,0 +1,19 @@
+apiVersion: karpenter.lambda.cloud/v1alpha1
+kind: LambdaNodeClass
+metadata:
+  name: eks-hybrid
+spec:
+  region: us-east-3
+  sshKeyNames:
+    - my-key
+  image:
+    family: lambda-stack-24-04
+  instanceTypeSelector:
+    - gpu_1x_gh200
+    - gpu_8x_h100
+  # Reference the built-in userdata ConfigMap rendered by the Helm chart.
+  userDataFrom:
+    - configMapRef:
+        name: lambda-karpenter-userdata-eks-hybrid
+        namespace: karpenter
+        key: userdata.yaml

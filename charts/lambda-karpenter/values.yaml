@@ -46,9 +46,14 @@ extraEnv: []
 
 # Cluster join configuration (used by default user-data templates).
 cluster:
-  type: ""             # "kubeadm" or "rke2" — selects the built-in user-data template
-  controllerIP: ""     # Internal IP of controller node
-  joinToken: ""        # Cluster join token
+  type: ""             # "kubeadm", "rke2", or "eks-hybrid" — selects the built-in user-data template
+  controllerIP: ""     # Internal IP of controller node (kubeadm/rke2)
+  joinToken: ""        # Cluster join token (kubeadm/rke2)
+  # EKS hybrid settings (required when cluster.type=eks-hybrid):
+  eksClusterName: ""         # EKS cluster name
+  eksRegion: ""              # AWS region for EKS
+  eksSSMActivationCode: ""   # SSM activation code for hybrid nodes
+  eksSSMActivationID: ""     # SSM activation ID for hybrid nodes
 
 # Lambda API token Secret. Set create=true to have the chart manage the Secret.
 secret:

@@ -1,0 +1,34 @@
+# Example values override for EKS hybrid cluster type.
+# Usage: helm install lambda-karpenter charts/lambda-karpenter -f examples/eks-hybrid/values.yaml
+
+config:
+  clusterName: my-eks-cluster
+  apiTokenSecret:
+    name: lambda-api-token
+
+cluster:
+  type: eks-hybrid
+  eksClusterName: my-eks-cluster
+  eksRegion: us-east-1
+  eksSSMActivationCode: ""   # Set via --set or .env.local
+  eksSSMActivationID: ""     # Set via --set or .env.local
+
+nodeClass:
+  enabled: true
+  name: default
+  region: us-east-3
+  sshKeyNames:
+    - my-key
+  image:
+    family: lambda-stack-24-04
+  instanceTypeSelector:
+    - gpu_1x_gh200
+
+nodePool:
+  enabled: true
+  name: default
+  limits:
+    nodes: 2
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 60m

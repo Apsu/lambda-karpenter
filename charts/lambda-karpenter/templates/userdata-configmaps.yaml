@@ -1,0 +1,12 @@
+{{- if .Values.cluster.type }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lambda-karpenter.fullname" . }}-userdata-{{ .Values.cluster.type }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lambda-karpenter.labels" . | nindent 4 }}
+data:
+  userdata.yaml: |
+    {{ include "lambda-karpenter.defaultUserData" . | nindent 4 }}
+{{- end }}
