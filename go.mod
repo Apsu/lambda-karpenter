@@ -1,4 +1,4 @@
-module github.com/evecallicoat/lambda-karpenter
+module github.com/lambdal/lambda-karpenter
 
 go 1.25.6
 

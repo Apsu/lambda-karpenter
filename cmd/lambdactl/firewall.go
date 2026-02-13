@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 )
 
 // FirewallCmd is the parent command for firewall management.

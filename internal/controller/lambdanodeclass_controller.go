@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
-	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/api/v1alpha1"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"

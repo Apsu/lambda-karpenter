@@ -24,19 +24,19 @@ type LambdaNodeClassList struct {
 }
 
 type LambdaNodeClassSpec struct {
-	Region               string              `json:"region"`
-	InstanceType         string              `json:"instanceType"`
-	InstanceTypeSelector []string            `json:"instanceTypeSelector,omitempty"`
-	Image                *LambdaImage        `json:"image,omitempty"`
-	SSHKeyNames          []string            `json:"sshKeyNames,omitempty"`
-	PublicIP             *bool               `json:"publicIP,omitempty"`
-	Pool                 string              `json:"pool,omitempty"`
-	FirewallRulesetIDs   []string            `json:"firewallRulesetIDs,omitempty"`
-	FileSystemNames      []string            `json:"fileSystemNames,omitempty"`
-	FileSystemMounts     []FileSystemMount   `json:"fileSystemMounts,omitempty"`
-	Tags                 map[string]string   `json:"tags,omitempty"`
-	UserData             string              `json:"userData,omitempty"`
-	UserDataFrom         []UserDataSource    `json:"userDataFrom,omitempty"`
+	Region               string            `json:"region"`
+	InstanceType         string            `json:"instanceType"`
+	InstanceTypeSelector []string          `json:"instanceTypeSelector,omitempty"`
+	Image                *LambdaImage      `json:"image,omitempty"`
+	SSHKeyNames          []string          `json:"sshKeyNames,omitempty"`
+	PublicIP             *bool             `json:"publicIP,omitempty"`
+	Pool                 string            `json:"pool,omitempty"`
+	FirewallRulesetIDs   []string          `json:"firewallRulesetIDs,omitempty"`
+	FileSystemNames      []string          `json:"fileSystemNames,omitempty"`
+	FileSystemMounts     []FileSystemMount `json:"fileSystemMounts,omitempty"`
+	Tags                 map[string]string `json:"tags,omitempty"`
+	UserData             string            `json:"userData,omitempty"`
+	UserDataFrom         []UserDataSource  `json:"userDataFrom,omitempty"`
 }
 
 // FileSystemMount specifies a Lambda Cloud filesystem mount.

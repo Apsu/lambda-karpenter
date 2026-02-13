@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/api/v1alpha1"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1317,9 +1317,9 @@ func TestProviderBuildLaunchRequestFilesystemMounts(t *testing.T) {
 
 	class := &v1alpha1.LambdaNodeClass{
 		Spec: v1alpha1.LambdaNodeClassSpec{
-			Region:       "us-east-3",
-			InstanceType: "gpu_1x_gh200",
-			SSHKeyNames:  []string{"key"},
+			Region:          "us-east-3",
+			InstanceType:    "gpu_1x_gh200",
+			SSHKeyNames:     []string{"key"},
 			FileSystemNames: []string{"my-fs"},
 			FileSystemMounts: []v1alpha1.FileSystemMount{
 				{MountPoint: "/mnt/data", FileSystemID: "fs-123"},

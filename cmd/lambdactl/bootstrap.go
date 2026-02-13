@@ -9,7 +9,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 	"sigs.k8s.io/yaml"
 )
 

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
+	"github.com/lambdal/lambda-karpenter/internal/ratelimit"
 )
 
 const (

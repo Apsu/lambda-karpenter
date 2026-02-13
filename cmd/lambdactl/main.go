@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
-	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
 	"github.com/joho/godotenv"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/internal/ratelimit"
 	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 )

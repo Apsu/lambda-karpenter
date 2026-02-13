@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evecallicoat/lambda-karpenter/internal/ratelimit"
+	"github.com/lambdal/lambda-karpenter/internal/ratelimit"
 )
 
 func newTestClient(t *testing.T, handler http.Handler) *Client {

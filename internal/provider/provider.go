@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
-	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/api/v1alpha1"
+	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
