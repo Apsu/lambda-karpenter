@@ -15,17 +15,18 @@ import (
 
 // BootstrapConfig is the YAML config file format for bootstrap.
 type BootstrapConfig struct {
-	ClusterName          string `json:"clusterName" yaml:"clusterName"`
-	ClusterType          string `json:"clusterType" yaml:"clusterType"` // "kubeadm" or "rke2"
-	Region               string `json:"region" yaml:"region"`
-	InstanceType         string `json:"instanceType" yaml:"instanceType"`
-	ImageFamily          string `json:"imageFamily" yaml:"imageFamily"`
-	SSHKeyName           string `json:"sshKeyName" yaml:"sshKeyName"`
-	SSHKeyPath           string `json:"sshKeyPath" yaml:"sshKeyPath"`
-	SSHUser              string `json:"sshUser" yaml:"sshUser"`
-	CloudInit            string `json:"cloudInit" yaml:"cloudInit"`
-	JoinToken            string `json:"joinToken" yaml:"joinToken"`
-	KubeconfigRemotePath string `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
+	ClusterName          string   `json:"clusterName" yaml:"clusterName"`
+	ClusterType          string   `json:"clusterType" yaml:"clusterType"` // "kubeadm" or "rke2"
+	Region               string   `json:"region" yaml:"region"`
+	InstanceType         string   `json:"instanceType" yaml:"instanceType"`
+	ImageFamily          string   `json:"imageFamily" yaml:"imageFamily"`
+	SSHKeyName           string   `json:"sshKeyName" yaml:"sshKeyName"`
+	SSHKeyPath           string   `json:"sshKeyPath" yaml:"sshKeyPath"`
+	SSHUser              string   `json:"sshUser" yaml:"sshUser"`
+	CloudInit            string   `json:"cloudInit" yaml:"cloudInit"`
+	JoinToken            string   `json:"joinToken" yaml:"joinToken"`
+	FirewallRulesetIDs   []string `json:"firewallRulesetIDs,omitempty" yaml:"firewallRulesetIDs,omitempty"`
+	KubeconfigRemotePath string   `json:"kubeconfigRemotePath,omitempty" yaml:"kubeconfigRemotePath,omitempty"`
 }
 
 type BootstrapCmd struct {
@@ -40,6 +41,7 @@ type BootstrapCmd struct {
 	CloudInit    string        `name:"cloud-init" help:"Path to cloud-init template."`
 	JoinToken    string        `name:"join-token" help:"Cluster join token."`
 	ClusterName  string        `name:"cluster-name" help:"Cluster name."`
+	FirewallIDs  []string      `name:"firewall-id" help:"Firewall ruleset ID to attach (repeatable)."`
 	ClusterDir   string        `name:"cluster-dir" help:"Output directory for cluster.yaml and kubeconfig (default configs/<cluster-name>/)."`
 	Timeout      time.Duration `name:"timeout" default:"30m" help:"Overall timeout."`
 }
@@ -64,6 +66,9 @@ func (c *BootstrapCmd) Run() error {
 	applyStringOverride(&cfg.SSHUser, c.SSHUser)
 	applyStringOverride(&cfg.CloudInit, c.CloudInit)
 	applyStringOverride(&cfg.JoinToken, c.JoinToken)
+	if len(c.FirewallIDs) > 0 {
+		cfg.FirewallRulesetIDs = append([]string(nil), c.FirewallIDs...)
+	}
 
 	// Apply defaults.
 	if cfg.SSHUser == "" {
@@ -128,7 +133,7 @@ func (c *BootstrapCmd) Run() error {
 	// 2. Launch instance.
 	instanceName := cfg.ClusterName + "-controller"
 	fmt.Printf("launching %s (%s in %s)...\n", instanceName, cfg.InstanceType, cfg.Region)
-	ids, err := client.LaunchInstance(ctx, lambdaclient.LaunchRequest{
+	launchReq := lambdaclient.LaunchRequest{
 		Name:             instanceName,
 		Hostname:         instanceName,
 		RegionName:       cfg.Region,
@@ -140,7 +145,11 @@ func (c *BootstrapCmd) Run() error {
 			{Key: "cluster", Value: cfg.ClusterName},
 			{Key: "role", Value: "controller"},
 		},
-	})
+	}
+	for _, id := range cfg.FirewallRulesetIDs {
+		launchReq.FirewallRulesets = append(launchReq.FirewallRulesets, lambdaclient.FirewallRulesetEntry{ID: id})
+	}
+	ids, err := client.LaunchInstance(ctx, launchReq)
 	fatalIf(err)
 	if len(ids) == 0 {
 		fatalf("no instance ID returned from launch")

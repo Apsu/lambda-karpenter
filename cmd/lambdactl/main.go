@@ -27,6 +27,9 @@ type CLI struct {
 	GetImage          GetImageCmd          `cmd:"" name:"get-image" help:"Get image details."`
 	Launch            LaunchCmd            `cmd:"" help:"Launch a new instance."`
 	Terminate         TerminateCmd         `cmd:"" help:"Terminate an instance."`
+	SSHKey            SSHKeyCmd            `cmd:"" name:"ssh-key" help:"SSH key management."`
+	Filesystem        FilesystemCmd        `cmd:"" help:"Filesystem management."`
+	Firewall          FirewallCmd          `cmd:"" help:"Firewall management."`
 	K8s               K8sCmd               `cmd:"" name:"k8s" help:"Kubernetes cluster management."`
 }
 

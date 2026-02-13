@@ -132,6 +132,57 @@ type ImageSpec struct {
 	Family string `json:"family,omitempty"`
 }
 
+// SSHKey represents a stored SSH public key.
+type SSHKey struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+}
+
+// GeneratedSSHKey is returned when the API generates a key pair.
+type GeneratedSSHKey struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	PublicKey  string `json:"public_key"`
+	PrivateKey string `json:"private_key"`
+}
+
+// Filesystem represents a shared filesystem.
+type Filesystem struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	MountPoint string `json:"mount_point"`
+	Created    string `json:"created"`
+	IsInUse    bool   `json:"is_in_use"`
+	Region     Region `json:"region"`
+	BytesUsed  int64  `json:"bytes_used"`
+}
+
+// FirewallRule represents a single inbound firewall rule.
+type FirewallRule struct {
+	Protocol      string `json:"protocol"`
+	PortRange     []int  `json:"port_range,omitempty"`
+	SourceNetwork string `json:"source_network"`
+	Description   string `json:"description"`
+}
+
+// FirewallRuleset represents a collection of firewall rules.
+type FirewallRuleset struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Region      Region         `json:"region"`
+	Rules       []FirewallRule `json:"rules"`
+	Created     string         `json:"created"`
+	InstanceIDs []string       `json:"instance_ids"`
+}
+
+// GlobalFirewallRuleset represents the global (account-wide) firewall rules.
+type GlobalFirewallRuleset struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Rules []FirewallRule `json:"rules"`
+}
+
 // LaunchRequest is the request body for launching a Lambda Cloud instance.
 type LaunchRequest struct {
 	Name             string                 `json:"name,omitempty"`
@@ -219,6 +270,170 @@ func (c *Client) ListImages(ctx context.Context) ([]Image, error) {
 		return nil, err
 	}
 	return resp.Data, nil
+}
+
+// --- SSH Keys ---
+
+func (c *Client) ListSSHKeys(ctx context.Context) ([]SSHKey, error) {
+	var resp struct {
+		Data []SSHKey `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/ssh-keys", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+// AddSSHKey adds an SSH key. If publicKey is empty, the API generates a key pair.
+func (c *Client) AddSSHKey(ctx context.Context, name, publicKey string) (*GeneratedSSHKey, error) {
+	body := struct {
+		Name      string `json:"name"`
+		PublicKey string `json:"public_key,omitempty"`
+	}{Name: name, PublicKey: publicKey}
+	var resp struct {
+		Data GeneratedSSHKey `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/v1/ssh-keys", body, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) DeleteSSHKey(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/ssh-keys/"+url.PathEscape(id), nil, nil, false)
+}
+
+// --- Filesystems ---
+
+func (c *Client) ListFilesystems(ctx context.Context) ([]Filesystem, error) {
+	var resp struct {
+		Data []Filesystem `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/file-systems", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) CreateFilesystem(ctx context.Context, name, region string) (*Filesystem, error) {
+	body := struct {
+		Name   string `json:"name"`
+		Region string `json:"region"`
+	}{Name: name, Region: region}
+	var resp struct {
+		Data Filesystem `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/v1/filesystems", body, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) DeleteFilesystem(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/filesystems/"+url.PathEscape(id), nil, nil, false)
+}
+
+// --- Firewall Rules (legacy account-wide) ---
+
+func (c *Client) ListFirewallRules(ctx context.Context) ([]FirewallRule, error) {
+	var resp struct {
+		Data []FirewallRule `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/firewall-rules", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) SetFirewallRules(ctx context.Context, rules []FirewallRule) ([]FirewallRule, error) {
+	body := struct {
+		Data []FirewallRule `json:"data"`
+	}{Data: rules}
+	var resp struct {
+		Data []FirewallRule `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPut, "/api/v1/firewall-rules", body, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+// --- Firewall Rulesets ---
+
+func (c *Client) ListFirewallRulesets(ctx context.Context) ([]FirewallRuleset, error) {
+	var resp struct {
+		Data []FirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/firewall-rulesets", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) GetFirewallRuleset(ctx context.Context, id string) (*FirewallRuleset, error) {
+	var resp struct {
+		Data FirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/firewall-rulesets/"+url.PathEscape(id), nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) CreateFirewallRuleset(ctx context.Context, name, region string, rules []FirewallRule) (*FirewallRuleset, error) {
+	body := struct {
+		Name   string         `json:"name"`
+		Region string         `json:"region"`
+		Rules  []FirewallRule `json:"rules"`
+	}{Name: name, Region: region, Rules: rules}
+	var resp struct {
+		Data FirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/v1/firewall-rulesets", body, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) UpdateFirewallRuleset(ctx context.Context, id string, name *string, rules []FirewallRule) (*FirewallRuleset, error) {
+	body := struct {
+		Name  *string        `json:"name,omitempty"`
+		Rules []FirewallRule `json:"rules,omitempty"`
+	}{Name: name, Rules: rules}
+	var resp struct {
+		Data FirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPatch, "/api/v1/firewall-rulesets/"+url.PathEscape(id), body, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) DeleteFirewallRuleset(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/firewall-rulesets/"+url.PathEscape(id), nil, nil, false)
+}
+
+func (c *Client) GetGlobalFirewallRuleset(ctx context.Context) (*GlobalFirewallRuleset, error) {
+	var resp struct {
+		Data GlobalFirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/firewall-rulesets/global", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
+func (c *Client) UpdateGlobalFirewallRuleset(ctx context.Context, rules []FirewallRule) (*GlobalFirewallRuleset, error) {
+	body := struct {
+		Rules []FirewallRule `json:"rules"`
+	}{Rules: rules}
+	var resp struct {
+		Data GlobalFirewallRuleset `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPatch, "/api/v1/firewall-rulesets/global", body, &resp, false); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any, isLaunch bool) error {
