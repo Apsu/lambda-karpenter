@@ -14,10 +14,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-const (
-	defaultKubeconfigRemotePath = "/etc/rancher/rke2/rke2.yaml"
-	kubeadmKubeconfigPath       = "/etc/kubernetes/admin.conf"
-)
+const defaultKubeconfigRemotePath = "/etc/rancher/rke2/rke2.yaml"
 
 type KubeconfigCmd struct {
 	ClusterDir           string        `name:"cluster-dir" help:"Path to cluster directory (reads defaults from cluster.yaml, updates it after success)."`

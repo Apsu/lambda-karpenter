@@ -6,12 +6,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Region",type=string,JSONPath=`.spec.region`
-// +kubebuilder:printcolumn:name="InstanceType",type=string,JSONPath=`.spec.instanceType`
-
+// LambdaNodeClass is the Schema for Lambda Cloud node classes.
+// Cluster-scoped. CRD is hand-authored in charts/lambda-karpenter/crds/.
 type LambdaNodeClass struct {
 	v1.TypeMeta   `json:",inline"`
 	v1.ObjectMeta `json:"metadata,omitempty"`
@@ -20,8 +16,7 @@ type LambdaNodeClass struct {
 	Status LambdaNodeClassStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-
+// LambdaNodeClassList contains a list of LambdaNodeClass.
 type LambdaNodeClassList struct {
 	v1.TypeMeta `json:",inline"`
 	v1.ListMeta `json:"metadata,omitempty"`

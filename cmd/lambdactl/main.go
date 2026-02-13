@@ -20,14 +20,14 @@ import (
 
 // CLI is the top-level command tree.
 type CLI struct {
-	ListInstances      ListInstancesCmd     `cmd:"" name:"list-instances" help:"List Lambda instances."`
-	GetInstance        GetInstanceCmd       `cmd:"" name:"get-instance" help:"Get instance details."`
-	ListInstanceTypes  ListInstanceTypesCmd `cmd:"" name:"list-instance-types" help:"List available instance types."`
-	ListImages         ListImagesCmd        `cmd:"" name:"list-images" help:"List available images."`
-	GetImage           GetImageCmd          `cmd:"" name:"get-image" help:"Get image details."`
-	Launch             LaunchCmd            `cmd:"" help:"Launch a new instance."`
-	Terminate          TerminateCmd         `cmd:"" help:"Terminate an instance."`
-	K8s                K8sCmd               `cmd:"" name:"k8s" help:"Kubernetes cluster management."`
+	ListInstances     ListInstancesCmd     `cmd:"" name:"list-instances" help:"List Lambda instances."`
+	GetInstance       GetInstanceCmd       `cmd:"" name:"get-instance" help:"Get instance details."`
+	ListInstanceTypes ListInstanceTypesCmd `cmd:"" name:"list-instance-types" help:"List available instance types."`
+	ListImages        ListImagesCmd        `cmd:"" name:"list-images" help:"List available images."`
+	GetImage          GetImageCmd          `cmd:"" name:"get-image" help:"Get image details."`
+	Launch            LaunchCmd            `cmd:"" help:"Launch a new instance."`
+	Terminate         TerminateCmd         `cmd:"" help:"Terminate an instance."`
+	K8s               K8sCmd               `cmd:"" name:"k8s" help:"Kubernetes cluster management."`
 }
 
 // APIFlags are shared flags for Lambda API commands.

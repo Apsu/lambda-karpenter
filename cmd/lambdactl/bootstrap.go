@@ -16,7 +16,7 @@ import (
 // BootstrapConfig is the YAML config file format for bootstrap.
 type BootstrapConfig struct {
 	ClusterName          string `json:"clusterName" yaml:"clusterName"`
-	ClusterType          string `json:"clusterType" yaml:"clusterType"`     // "kubeadm" or "rke2"
+	ClusterType          string `json:"clusterType" yaml:"clusterType"` // "kubeadm" or "rke2"
 	Region               string `json:"region" yaml:"region"`
 	InstanceType         string `json:"instanceType" yaml:"instanceType"`
 	ImageFamily          string `json:"imageFamily" yaml:"imageFamily"`

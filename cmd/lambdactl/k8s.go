@@ -227,9 +227,7 @@ func waitAPIReady(ctx context.Context, cfg *rest.Config, poll time.Duration) err
 }
 
 func loMust[T any](v T, err error) T {
-	if err != nil {
-		fatalIf(err)
-	}
+	fatalIf(err)
 	return v
 }
 

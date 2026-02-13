@@ -51,9 +51,9 @@ func TestWaitLaunchContextCancel(t *testing.T) {
 
 func TestWaitLaunchConcurrentSpacing(t *testing.T) {
 	const (
-		n        = 5
-		spacing  = 50 * time.Millisecond
-		slop     = 15 * time.Millisecond // timer jitter tolerance
+		n       = 5
+		spacing = 50 * time.Millisecond
+		slop    = 15 * time.Millisecond // timer jitter tolerance
 	)
 
 	l := New(100, spacing)

@@ -48,13 +48,13 @@ var _ cloudprovider.CloudProvider = (*Provider)(nil)
 
 // Provider implements the Karpenter CloudProvider interface for Lambda Cloud.
 type Provider struct {
-	kubeClient            client.Client
-	lambda                LambdaAPI
-	listCache             InstanceLister
-	cache                 *lambdaclient.InstanceTypeCache
-	unavailableOfferings  *UnavailableOfferings
-	clusterName           string
-	log                   logr.Logger
+	kubeClient           client.Client
+	lambda               LambdaAPI
+	listCache            InstanceLister
+	cache                *lambdaclient.InstanceTypeCache
+	unavailableOfferings *UnavailableOfferings
+	clusterName          string
+	log                  logr.Logger
 }
 
 func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, cache *lambdaclient.InstanceTypeCache, unavailableOfferings *UnavailableOfferings, clusterName string, log logr.Logger) *Provider {

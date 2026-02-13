@@ -42,29 +42,29 @@ func TestListInstances(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{
 				{
-					"id":     "i-1",
-					"status": "active",
-					"ssh_key_names": []string{"Eve"},
+					"id":                "i-1",
+					"status":            "active",
+					"ssh_key_names":     []string{"Eve"},
 					"file_system_names": []string{},
 					"instance_type": map[string]any{
-						"name": "gpu_1x_gh200",
-						"description": "GH200",
-						"gpu_description": "GH200",
+						"name":                 "gpu_1x_gh200",
+						"description":          "GH200",
+						"gpu_description":      "GH200",
 						"price_cents_per_hour": 1000,
 						"specs": map[string]any{
-							"vcpus": 96,
-							"memory_gib": 480,
+							"vcpus":       96,
+							"memory_gib":  480,
 							"storage_gib": 0,
-							"gpus": 1,
+							"gpus":        1,
 						},
 					},
 					"region": map[string]any{"name": "us-east-3"},
 					"actions": map[string]any{
-						"migrate": map[string]any{"available": false},
-						"rebuild": map[string]any{"available": true},
-						"restart": map[string]any{"available": true},
+						"migrate":     map[string]any{"available": false},
+						"rebuild":     map[string]any{"available": true},
+						"restart":     map[string]any{"available": true},
 						"cold_reboot": map[string]any{"available": true},
-						"terminate": map[string]any{"available": true},
+						"terminate":   map[string]any{"available": true},
 					},
 				},
 			},
@@ -88,29 +88,29 @@ func TestGetInstance(t *testing.T) {
 		assertAuth(t, r)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{
-				"id":     "i-2",
-				"status": "booting",
-				"ssh_key_names": []string{"Eve"},
+				"id":                "i-2",
+				"status":            "booting",
+				"ssh_key_names":     []string{"Eve"},
 				"file_system_names": []string{},
 				"instance_type": map[string]any{
-					"name": "gpu_1x_gh200",
-					"description": "GH200",
-					"gpu_description": "GH200",
+					"name":                 "gpu_1x_gh200",
+					"description":          "GH200",
+					"gpu_description":      "GH200",
 					"price_cents_per_hour": 1000,
 					"specs": map[string]any{
-						"vcpus": 96,
-						"memory_gib": 480,
+						"vcpus":       96,
+						"memory_gib":  480,
 						"storage_gib": 0,
-						"gpus": 1,
+						"gpus":        1,
 					},
 				},
 				"region": map[string]any{"name": "us-east-3"},
 				"actions": map[string]any{
-					"migrate": map[string]any{"available": false},
-					"rebuild": map[string]any{"available": true},
-					"restart": map[string]any{"available": true},
+					"migrate":     map[string]any{"available": false},
+					"rebuild":     map[string]any{"available": true},
+					"restart":     map[string]any{"available": true},
 					"cold_reboot": map[string]any{"available": true},
-					"terminate": map[string]any{"available": true},
+					"terminate":   map[string]any{"available": true},
 				},
 			},
 		})
@@ -195,8 +195,8 @@ func TestListInstanceTypes(t *testing.T) {
 			"data": map[string]any{
 				"gpu_1x_gh200": map[string]any{
 					"instance_type": map[string]any{
-						"name": "gpu_1x_gh200",
-						"description": "GH200",
+						"name":            "gpu_1x_gh200",
+						"description":     "GH200",
 						"gpu_description": "GH200",
 						"specs": map[string]any{
 							"vcpus":       96,

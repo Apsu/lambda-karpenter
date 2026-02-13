@@ -44,22 +44,22 @@ func New(baseURL, token string, limiter *ratelimit.Limiter) (*Client, error) {
 	}, nil
 }
 
-// Instance represents a Lambda instance (partial fields for MVP).
+// Instance represents a Lambda Cloud instance.
 type Instance struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Status    string          `json:"status"`
-	IP        string          `json:"ip"`
-	PrivateIP string          `json:"private_ip"`
-	Hostname  string          `json:"hostname"`
-	SSHKeyNames      []string               `json:"ssh_key_names"`
-	FileSystemNames  []string               `json:"file_system_names"`
-	FileSystemMounts []FilesystemMountEntry `json:"file_system_mounts,omitempty"`
-	Tags      []TagEntry      `json:"tags"`
-	Actions   InstanceActionAvailability `json:"actions"`
-	Region    Region          `json:"region"`
-	Type      InstanceTypeRef `json:"instance_type"`
-	CreatedAt time.Time       `json:"created_time"`
+	ID               string                     `json:"id"`
+	Name             string                     `json:"name"`
+	Status           string                     `json:"status"`
+	IP               string                     `json:"ip"`
+	PrivateIP        string                     `json:"private_ip"`
+	Hostname         string                     `json:"hostname"`
+	SSHKeyNames      []string                   `json:"ssh_key_names"`
+	FileSystemNames  []string                   `json:"file_system_names"`
+	FileSystemMounts []FilesystemMountEntry     `json:"file_system_mounts,omitempty"`
+	Tags             []TagEntry                 `json:"tags"`
+	Actions          InstanceActionAvailability `json:"actions"`
+	Region           Region                     `json:"region"`
+	Type             InstanceTypeRef            `json:"instance_type"`
+	CreatedAt        time.Time                  `json:"created_time"`
 }
 
 // InstanceTypeRef represents Lambda instance type detail.
@@ -88,7 +88,7 @@ type Region struct {
 	Description string `json:"description"`
 }
 
-// Image represents a Lambda image (partial fields for MVP).
+// Image represents a Lambda Cloud image.
 type Image struct {
 	ID          string    `json:"id"`
 	Family      string    `json:"family"`
@@ -132,7 +132,7 @@ type ImageSpec struct {
 	Family string `json:"family,omitempty"`
 }
 
-// LaunchRequest is the MVP subset of the Lambda launch request.
+// LaunchRequest is the request body for launching a Lambda Cloud instance.
 type LaunchRequest struct {
 	Name             string                 `json:"name,omitempty"`
 	Hostname         string                 `json:"hostname,omitempty"`
