@@ -2,18 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/apimachinery/pkg/util/wait"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -28,11 +24,8 @@ type K8sCmd struct {
 	Kubeconfig KubeconfigCmd `cmd:"" help:"Extract kubeconfig from existing remote RKE2 node."`
 	Gather     GatherCmd     `cmd:"" help:"SSH into controller and populate missing cluster.yaml fields (kubeconfig, internalIP)."`
 	User       UserCmd       `cmd:"" help:"Manage per-user SA + token kubeconfigs."`
-	Apply      ApplyCmd      `cmd:"" help:"Server-side apply resources."`
-	Delete     DeleteCmd     `cmd:"" help:"Delete resources."`
-	Status     StatusCmd     `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
-	Nodeclaims NodeclaimsCmd `cmd:"" help:"List NodeClaim details."`
-	Wait       WaitCmd       `cmd:"" help:"Wait for NodeClaim to be ready."`
+	Status StatusCmd `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
+	Wait   WaitCmd   `cmd:"" help:"Wait for NodeClaim to be ready."`
 }
 
 // K8sFlags are shared flags for k8s resource commands.
@@ -86,54 +79,6 @@ func (c *GatherCmd) Run() error {
 	return nil
 }
 
-// --- Resource commands ---
-
-type ApplyCmd struct {
-	K8sFlags
-	NodeClass []string `name:"nodeclass" help:"Path to LambdaNodeClass YAML (repeatable)." sep:"none"`
-	NodePool  []string `name:"nodepool" help:"Path to NodePool YAML (repeatable)." sep:"none"`
-	Pod       string   `name:"pod" help:"Path to Pod YAML."`
-}
-
-func (c *ApplyCmd) Run() error {
-	c.resolveKubeconfig()
-	var paths []string
-	paths = append(paths, c.NodeClass...)
-	paths = append(paths, c.NodePool...)
-	if c.Pod != "" {
-		paths = append(paths, c.Pod)
-	}
-	if len(paths) == 0 {
-		fatalf("at least one of --nodeclass, --nodepool, or --pod is required")
-	}
-	applyObjects(c.K8sFlags, paths)
-	return nil
-}
-
-type DeleteCmd struct {
-	K8sFlags
-	NodeClass string `name:"nodeclass" help:"LambdaNodeClass name."`
-	NodePool  string `name:"nodepool" help:"NodePool name."`
-	NodeClaim string `name:"nodeclaim" help:"NodeClaim name."`
-}
-
-func (c *DeleteCmd) Run() error {
-	c.resolveKubeconfig()
-	if c.NodeClass == "" && c.NodePool == "" && c.NodeClaim == "" {
-		fatalf("at least one of --nodeclass, --nodepool, or --nodeclaim is required")
-	}
-	if c.NodeClaim != "" {
-		deleteByName(c.K8sFlags, "NodeClaim", c.NodeClaim)
-	}
-	if c.NodePool != "" {
-		deleteByName(c.K8sFlags, "NodePool", c.NodePool)
-	}
-	if c.NodeClass != "" {
-		deleteByName(c.K8sFlags, "LambdaNodeClass", c.NodeClass)
-	}
-	return nil
-}
-
 type StatusCmd struct {
 	K8sFlags
 }
@@ -141,16 +86,6 @@ type StatusCmd struct {
 func (c *StatusCmd) Run() error {
 	c.resolveKubeconfig()
 	listStatus(c.K8sFlags)
-	return nil
-}
-
-type NodeclaimsCmd struct {
-	K8sFlags
-}
-
-func (c *NodeclaimsCmd) Run() error {
-	c.resolveKubeconfig()
-	listNodeClaims(c.K8sFlags)
 	return nil
 }
 
@@ -231,83 +166,6 @@ func loMust[T any](v T, err error) T {
 	return v
 }
 
-func readUnstructured(path string) ([]*unstructured.Unstructured, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	decoder := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	yamlReader := utilyaml.NewYAMLOrJSONDecoder(f, 4096)
-	var objs []*unstructured.Unstructured
-	for {
-		var raw json.RawMessage
-		if err := yamlReader.Decode(&raw); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		if len(raw) == 0 {
-			continue
-		}
-		obj := &unstructured.Unstructured{}
-		if _, _, err := decoder.Decode(raw, nil, obj); err != nil {
-			return nil, err
-		}
-		objs = append(objs, obj)
-	}
-	return objs, nil
-}
-
-func applyObjects(flags K8sFlags, paths []string) {
-	dyn := mustDynamic(flags)
-	ctx := context.Background()
-
-	for _, path := range paths {
-		objs, err := readUnstructured(path)
-		fatalIf(err)
-		for _, obj := range objs {
-			gvr := gvrForGVK(obj.GroupVersionKind())
-			if gvr.Resource == "" {
-				fatalf("unsupported kind %s", obj.GetKind())
-			}
-			var res dynamic.ResourceInterface
-			ns := obj.GetNamespace()
-			if ns != "" {
-				res = dyn.Resource(gvr).Namespace(ns)
-			} else {
-				res = dyn.Resource(gvr)
-			}
-			name := obj.GetName()
-			// Clear resourceVersion to avoid conflicts with server-side apply.
-			obj.SetResourceVersion("")
-			obj.SetManagedFields(nil)
-			_, err = res.Apply(ctx, name, obj, metav1.ApplyOptions{
-				FieldManager: "lambdactl",
-				Force:        true,
-			})
-			fatalIf(err)
-			fmt.Printf("applied %s/%s\n", obj.GetKind(), name)
-		}
-	}
-}
-
-func deleteByName(flags K8sFlags, kind string, name string) {
-	dyn := mustDynamic(flags)
-	ctx := context.Background()
-	gvr := gvrForKind(kind)
-	if gvr.Resource == "" {
-		fatalf("unsupported kind %s", kind)
-	}
-	res := dyn.Resource(gvr)
-	if err := res.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		fatalIf(err)
-	}
-	fmt.Printf("deleted %s/%s\n", kind, name)
-}
-
 func gvrForKind(kind string) schema.GroupVersionResource {
 	switch kind {
 	case "LambdaNodeClass":
@@ -316,27 +174,6 @@ func gvrForKind(kind string) schema.GroupVersionResource {
 		return schema.GroupVersionResource{Group: "karpenter.sh", Version: "v1", Resource: "nodepools"}
 	case "NodeClaim":
 		return schema.GroupVersionResource{Group: "karpenter.sh", Version: "v1", Resource: "nodeclaims"}
-	default:
-		return schema.GroupVersionResource{}
-	}
-}
-
-func gvrForGVK(gvk schema.GroupVersionKind) schema.GroupVersionResource {
-	switch gvk.Kind {
-	case "LambdaNodeClass":
-		return gvrForKind("LambdaNodeClass")
-	case "NodePool":
-		return gvrForKind("NodePool")
-	case "NodeClaim":
-		return gvrForKind("NodeClaim")
-	case "Namespace":
-		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
-	case "Secret":
-		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
-	case "ServiceAccount":
-		return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
-	case "ClusterRoleBinding":
-		return schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
 	default:
 		return schema.GroupVersionResource{}
 	}
@@ -391,26 +228,6 @@ func listStatus(flags K8sFlags) {
 				hasCondition(item, "Initialized"),
 			)
 		}
-	}
-}
-
-func listNodeClaims(flags K8sFlags) {
-	dyn := mustDynamic(flags)
-	ctx := context.Background()
-	items := listByKind(ctx, dyn, "NodeClaim")
-	if len(items) == 0 {
-		fmt.Println("no NodeClaims found")
-		return
-	}
-	for _, item := range items {
-		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
-		fmt.Printf("%s\t%s\tlaunched=%t\tregistered=%t\tinitialized=%t\n",
-			item.GetName(),
-			providerID,
-			hasCondition(item, "Launched"),
-			hasCondition(item, "Registered"),
-			hasCondition(item, "Initialized"),
-		)
 	}
 }
 
