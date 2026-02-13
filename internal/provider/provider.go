@@ -29,6 +29,7 @@ const (
 	tagNodeClass     = "karpenter-lambda-cloud-lambdanodeclass"
 	tagCluster       = "karpenter-sh-cluster"
 	tagImageID       = "karpenter-lambda-cloud-image-id"
+	tagUserDataHash  = "karpenter-lambda-cloud-userdata-hash"
 )
 
 type LambdaAPI interface {
@@ -106,15 +107,31 @@ func (p *Provider) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (clou
 		}
 	}
 
-	// Check image drift: compare the image ID/family stored at launch time
-	// against the current nodeclass spec.
+	// Check image drift: compare the image ID stored at launch time against
+	// the current resolved image ID (from status, set by controller).
+	// Falls back to spec if status is not yet populated.
 	if class.Spec.Image != nil && nodeClaim.Status.ImageID != "" {
-		wantImageID := class.Spec.Image.ID
+		wantImageID := class.Status.ResolvedImageID
 		if wantImageID == "" {
-			wantImageID = class.Spec.Image.Family
+			// Fallback: controller hasn't resolved yet, use spec directly.
+			wantImageID = class.Spec.Image.ID
+			if wantImageID == "" {
+				wantImageID = class.Spec.Image.Family
+			}
 		}
 		if wantImageID != "" && nodeClaim.Status.ImageID != wantImageID {
 			return "ImageDrifted", nil
+		}
+	}
+
+	// Check userData drift: compare the hash stored at launch time (in instance tag)
+	// against the current resolved hash in the NodeClass status.
+	if class.Status.ResolvedUserDataHash != "" {
+		if inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim); err == nil && inst != nil {
+			tags := tagsToMap(inst.Tags)
+			if launchHash := tags[tagUserDataHash]; launchHash != "" && launchHash != class.Status.ResolvedUserDataHash {
+				return "UserDataDrifted", nil
+			}
 		}
 	}
 
@@ -252,14 +269,22 @@ func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) 
 		return nil, err
 	}
 
-	// If the NodePool's NodeClass pins a specific instance type, filter to only that type.
+	// If the NodePool's NodeClass pins a specific instance type or uses a selector,
+	// filter the returned types accordingly.
 	var pinnedType string
+	var selectorSet map[string]bool
 	if nodePool != nil && nodePool.Spec.Template.Spec.NodeClassRef != nil {
 		ref := nodePool.Spec.Template.Spec.NodeClassRef
 		if ref.Group == v1alpha1.Group && ref.Kind == "LambdaNodeClass" {
 			var class v1alpha1.LambdaNodeClass
 			if err := p.kubeClient.Get(ctx, types.NamespacedName{Name: ref.Name}, &class); err == nil {
 				pinnedType = class.Spec.InstanceType
+				if len(class.Spec.InstanceTypeSelector) > 0 {
+					selectorSet = make(map[string]bool, len(class.Spec.InstanceTypeSelector))
+					for _, name := range class.Spec.InstanceTypeSelector {
+						selectorSet[name] = true
+					}
+				}
 			}
 		}
 	}
@@ -267,6 +292,9 @@ func (p *Provider) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) 
 	instanceTypes := make([]*cloudprovider.InstanceType, 0, len(items))
 	for name, item := range items {
 		if pinnedType != "" && name != pinnedType {
+			continue
+		}
+		if selectorSet != nil && !selectorSet[name] {
 			continue
 		}
 		instanceTypes = append(instanceTypes, p.instanceTypeFromItem(name, item))
@@ -350,6 +378,16 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		launchTags = append(launchTags, lambdaclient.TagEntry{Key: key, Value: v})
 	}
 
+	// Determine userData source: prefer resolved content from userDataFrom, fall back to inline.
+	var rawUserData string
+	var userDataHash string
+	if class.Status.ResolvedUserData != "" {
+		rawUserData = class.Status.ResolvedUserData
+		userDataHash = class.Status.ResolvedUserDataHash
+	} else {
+		rawUserData = class.Spec.UserData
+	}
+
 	// Render userData templates with launch-time context.
 	udCtx := userDataContext{
 		Region:        class.Spec.Region,
@@ -360,7 +398,7 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		udCtx.ImageFamily = class.Spec.Image.Family
 		udCtx.ImageID = class.Spec.Image.ID
 	}
-	renderedUserData, err := renderUserData(class.Spec.UserData, udCtx)
+	renderedUserData, err := renderUserData(rawUserData, udCtx)
 	if err != nil {
 		return lambdaclient.LaunchRequest{}, fmt.Errorf("rendering userData template: %w", err)
 	}
@@ -376,15 +414,31 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 	}
 
 	if class.Spec.Image != nil {
-		req.Image = &lambdaclient.ImageSpec{ID: class.Spec.Image.ID, Family: class.Spec.Image.Family}
+		// Prefer resolved image ID from status (set by controller's image resolver).
+		imageSpec := lambdaclient.ImageSpec{ID: class.Spec.Image.ID, Family: class.Spec.Image.Family}
+		if class.Status.ResolvedImageID != "" {
+			imageSpec.ID = class.Status.ResolvedImageID
+		}
+		req.Image = &imageSpec
 		// Tag with image identifier so nodeClaimFromInstance can set Status.ImageID,
 		// enabling Karpenter drift detection on image changes.
-		imageID := class.Spec.Image.ID
-		if imageID == "" {
-			imageID = class.Spec.Image.Family
+		imageTag := imageSpec.ID
+		if imageTag == "" {
+			imageTag = imageSpec.Family
 		}
-		if imageID != "" {
-			req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagImageID, Value: imageID})
+		if imageTag != "" {
+			req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagImageID, Value: imageTag})
+		}
+	}
+	if len(class.Spec.FileSystemNames) > 0 {
+		req.FileSystemNames = append([]string(nil), class.Spec.FileSystemNames...)
+	}
+	if len(class.Spec.FileSystemMounts) > 0 {
+		for _, m := range class.Spec.FileSystemMounts {
+			req.FileSystemMounts = append(req.FileSystemMounts, lambdaclient.FilesystemMountEntry{
+				MountPoint:   m.MountPoint,
+				FileSystemID: m.FileSystemID,
+			})
 		}
 	}
 	if len(class.Spec.FirewallRulesetIDs) > 0 {
@@ -397,6 +451,10 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 	}
 	if class.Spec.Pool != "" {
 		req.Pool = class.Spec.Pool
+	}
+	// Tag with userData hash for drift detection (userDataFrom path).
+	if userDataHash != "" {
+		req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagUserDataHash, Value: userDataHash})
 	}
 	return req, nil
 }

@@ -1312,6 +1312,47 @@ func TestProviderBuildLaunchRequestFullSpec(t *testing.T) {
 	}
 }
 
+func TestProviderBuildLaunchRequestFilesystemMounts(t *testing.T) {
+	p := &Provider{clusterName: "test"}
+
+	class := &v1alpha1.LambdaNodeClass{
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"key"},
+			FileSystemNames: []string{"my-fs"},
+			FileSystemMounts: []v1alpha1.FileSystemMount{
+				{MountPoint: "/mnt/data", FileSystemID: "fs-123"},
+				{MountPoint: "/mnt/models", FileSystemID: "fs-456"},
+			},
+		},
+	}
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
+		},
+	}
+
+	req, err := p.buildLaunchRequest(nc, class)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+
+	if len(req.FileSystemNames) != 1 || req.FileSystemNames[0] != "my-fs" {
+		t.Fatalf("expected fileSystemNames [my-fs], got %v", req.FileSystemNames)
+	}
+	if len(req.FileSystemMounts) != 2 {
+		t.Fatalf("expected 2 filesystem mounts, got %d", len(req.FileSystemMounts))
+	}
+	if req.FileSystemMounts[0].MountPoint != "/mnt/data" || req.FileSystemMounts[0].FileSystemID != "fs-123" {
+		t.Fatalf("unexpected first mount: %+v", req.FileSystemMounts[0])
+	}
+	if req.FileSystemMounts[1].MountPoint != "/mnt/models" || req.FileSystemMounts[1].FileSystemID != "fs-456" {
+		t.Fatalf("unexpected second mount: %+v", req.FileSystemMounts[1])
+	}
+}
+
 func TestProviderBuildLaunchRequestImageFamily(t *testing.T) {
 	p := &Provider{clusterName: "test"}
 
@@ -1641,6 +1682,163 @@ func TestGetInstanceTypesFilteredByNodeClass(t *testing.T) {
 	}
 	if its[0].Name != "gpu_1x_gh200" {
 		t.Fatalf("expected gpu_1x_gh200, got %s", its[0].Name)
+	}
+}
+
+func TestGetInstanceTypesFilteredBySelector(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-selector"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:               "us-east-3",
+			SSHKeyNames:          []string{"key"},
+			InstanceTypeSelector: []string{"gpu_1x_gh200", "gpu_1x_h100"},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs}},
+		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
+		"gpu_1x_h100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_h100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 26, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
+	})
+
+	p := New(client, nil, nil, cache, NewUnavailableOfferings(5*time.Minute), "test", testLog)
+
+	nodePool := &v1.NodePool{
+		Spec: v1.NodePoolSpec{
+			Template: v1.NodeClaimTemplate{
+				Spec: v1.NodeClaimTemplateSpec{
+					NodeClassRef: &v1.NodeClassReference{
+						Group: v1alpha1.Group,
+						Kind:  "LambdaNodeClass",
+						Name:  "lambda-selector",
+					},
+				},
+			},
+		},
+	}
+
+	its, err := p.GetInstanceTypes(context.Background(), nodePool)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 2 {
+		t.Fatalf("expected 2 instance types from selector, got %d", len(its))
+	}
+	names := map[string]bool{}
+	for _, it := range its {
+		names[it.Name] = true
+	}
+	if !names["gpu_1x_gh200"] || !names["gpu_1x_h100"] {
+		t.Fatalf("expected gh200 and h100, got %v", names)
+	}
+	if names["gpu_1x_a100"] {
+		t.Fatal("a100 should have been filtered out by selector")
+	}
+}
+
+func TestGetInstanceTypesSelectorNoMatches(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-selector"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:               "us-east-3",
+			SSHKeyNames:          []string{"key"},
+			InstanceTypeSelector: []string{"gpu_1x_nonexistent"},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs}},
+	})
+
+	p := New(client, nil, nil, cache, NewUnavailableOfferings(5*time.Minute), "test", testLog)
+
+	nodePool := &v1.NodePool{
+		Spec: v1.NodePoolSpec{
+			Template: v1.NodeClaimTemplate{
+				Spec: v1.NodeClaimTemplateSpec{
+					NodeClassRef: &v1.NodeClassReference{
+						Group: v1alpha1.Group,
+						Kind:  "LambdaNodeClass",
+						Name:  "lambda-selector",
+					},
+				},
+			},
+		},
+	}
+
+	its, err := p.GetInstanceTypes(context.Background(), nodePool)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 0 {
+		t.Fatalf("expected 0 instance types for non-matching selector, got %d", len(its))
+	}
+}
+
+func TestGetInstanceTypesEmptySelectorReturnsAll(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	// NodeClass with empty selector and no pinned type — should return all.
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-all"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"key"},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+
+	cache := testInstanceTypeCache(map[string]lambdaclient.InstanceTypesItem{
+		"gpu_1x_gh200": {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs}},
+		"gpu_1x_a100":  {InstanceType: lambdaclient.InstanceTypeRef{Name: "gpu_1x_a100", Specs: lambdaclient.InstanceTypeSpec{VCPUs: 30, MemoryGiB: 200, StorageGiB: 512, GPUs: 1}}},
+	})
+
+	p := New(client, nil, nil, cache, NewUnavailableOfferings(5*time.Minute), "test", testLog)
+
+	nodePool := &v1.NodePool{
+		Spec: v1.NodePoolSpec{
+			Template: v1.NodeClaimTemplate{
+				Spec: v1.NodeClaimTemplateSpec{
+					NodeClassRef: &v1.NodeClassReference{
+						Group: v1alpha1.Group,
+						Kind:  "LambdaNodeClass",
+						Name:  "lambda-all",
+					},
+				},
+			},
+		},
+	}
+
+	its, err := p.GetInstanceTypes(context.Background(), nodePool)
+	if err != nil {
+		t.Fatalf("GetInstanceTypes: %v", err)
+	}
+	if len(its) != 2 {
+		t.Fatalf("expected 2 instance types (empty selector = all), got %d", len(its))
 	}
 }
 

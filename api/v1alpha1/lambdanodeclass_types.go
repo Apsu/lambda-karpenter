@@ -24,16 +24,40 @@ type LambdaNodeClassList struct {
 }
 
 type LambdaNodeClassSpec struct {
-	Region               string            `json:"region"`
-	InstanceType         string            `json:"instanceType"`
-	InstanceTypeSelector []string          `json:"instanceTypeSelector,omitempty"`
-	Image                *LambdaImage      `json:"image,omitempty"`
-	SSHKeyNames          []string          `json:"sshKeyNames,omitempty"`
-	PublicIP             *bool             `json:"publicIP,omitempty"`
-	Pool                 string            `json:"pool,omitempty"`
-	FirewallRulesetIDs   []string          `json:"firewallRulesetIDs,omitempty"`
-	Tags                 map[string]string `json:"tags,omitempty"`
-	UserData             string            `json:"userData,omitempty"`
+	Region               string              `json:"region"`
+	InstanceType         string              `json:"instanceType"`
+	InstanceTypeSelector []string            `json:"instanceTypeSelector,omitempty"`
+	Image                *LambdaImage        `json:"image,omitempty"`
+	SSHKeyNames          []string            `json:"sshKeyNames,omitempty"`
+	PublicIP             *bool               `json:"publicIP,omitempty"`
+	Pool                 string              `json:"pool,omitempty"`
+	FirewallRulesetIDs   []string            `json:"firewallRulesetIDs,omitempty"`
+	FileSystemNames      []string            `json:"fileSystemNames,omitempty"`
+	FileSystemMounts     []FileSystemMount   `json:"fileSystemMounts,omitempty"`
+	Tags                 map[string]string   `json:"tags,omitempty"`
+	UserData             string              `json:"userData,omitempty"`
+	UserDataFrom         []UserDataSource    `json:"userDataFrom,omitempty"`
+}
+
+// FileSystemMount specifies a Lambda Cloud filesystem mount.
+type FileSystemMount struct {
+	MountPoint   string `json:"mountPoint"`
+	FileSystemID string `json:"fileSystemID"`
+}
+
+// UserDataSource is a source of userData content.
+// Exactly one of Inline or ConfigMapRef must be set.
+type UserDataSource struct {
+	Inline       string           `json:"inline,omitempty"`
+	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
+}
+
+// ConfigMapKeyRef references a key in a ConfigMap.
+// Namespace is required because LambdaNodeClass is cluster-scoped.
+type ConfigMapKeyRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
 }
 
 type LambdaImage struct {
@@ -42,10 +66,12 @@ type LambdaImage struct {
 }
 
 type LambdaNodeClassStatus struct {
-	ResolvedImageID     string             `json:"resolvedImageID,omitempty"`
-	ResolvedImageFamily string             `json:"resolvedImageFamily,omitempty"`
-	LastValidatedAt     *v1.Time           `json:"lastValidatedAt,omitempty"`
-	Conditions          []status.Condition `json:"conditions,omitempty"`
+	ResolvedImageID      string             `json:"resolvedImageID,omitempty"`
+	ResolvedImageFamily  string             `json:"resolvedImageFamily,omitempty"`
+	ResolvedUserData     string             `json:"resolvedUserData,omitempty"`
+	ResolvedUserDataHash string             `json:"resolvedUserDataHash,omitempty"`
+	LastValidatedAt      *v1.Time           `json:"lastValidatedAt,omitempty"`
+	Conditions           []status.Condition `json:"conditions,omitempty"`
 }
 
 func init() {
@@ -124,6 +150,13 @@ func (in *LambdaNodeClassSpec) DeepCopy() *LambdaNodeClassSpec {
 	if in.FirewallRulesetIDs != nil {
 		out.FirewallRulesetIDs = append([]string(nil), in.FirewallRulesetIDs...)
 	}
+	if in.FileSystemNames != nil {
+		out.FileSystemNames = append([]string(nil), in.FileSystemNames...)
+	}
+	if in.FileSystemMounts != nil {
+		out.FileSystemMounts = make([]FileSystemMount, len(in.FileSystemMounts))
+		copy(out.FileSystemMounts, in.FileSystemMounts)
+	}
 	if in.Tags != nil {
 		out.Tags = make(map[string]string, len(in.Tags))
 		for k, v := range in.Tags {
@@ -134,6 +167,16 @@ func (in *LambdaNodeClassSpec) DeepCopy() *LambdaNodeClassSpec {
 		out.Image = &LambdaImage{
 			ID:     in.Image.ID,
 			Family: in.Image.Family,
+		}
+	}
+	if in.UserDataFrom != nil {
+		out.UserDataFrom = make([]UserDataSource, len(in.UserDataFrom))
+		for i, src := range in.UserDataFrom {
+			out.UserDataFrom[i] = UserDataSource{Inline: src.Inline}
+			if src.ConfigMapRef != nil {
+				ref := *src.ConfigMapRef
+				out.UserDataFrom[i].ConfigMapRef = &ref
+			}
 		}
 	}
 	return out

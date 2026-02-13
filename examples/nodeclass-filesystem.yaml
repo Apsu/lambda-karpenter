@@ -1,0 +1,21 @@
+apiVersion: karpenter.lambda.cloud/v1alpha1
+kind: LambdaNodeClass
+metadata:
+  name: with-filesystem
+spec:
+  region: us-east-3
+  sshKeyNames:
+    - my-key
+  instanceTypeSelector:
+    - gpu_1x_gh200
+    - gpu_8x_h100
+  image:
+    family: lambda-stack-24-04
+  # Mount Lambda Cloud persistent storage filesystems.
+  fileSystemNames:
+    - shared-data
+  fileSystemMounts:
+    - mountPoint: /mnt/models
+      fileSystemID: fs-abc123
+    - mountPoint: /mnt/datasets
+      fileSystemID: fs-def456

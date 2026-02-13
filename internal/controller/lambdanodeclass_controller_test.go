@@ -2,10 +2,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/evecallicoat/lambda-karpenter/api/v1alpha1"
+	"github.com/evecallicoat/lambda-karpenter/internal/lambdaclient"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -16,14 +21,23 @@ import (
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
+	_ = corev1.AddToScheme(s)
 	return s
 }
 
 func reconcileNC(t *testing.T, nc *v1alpha1.LambdaNodeClass) *v1alpha1.LambdaNodeClass {
+	return reconcileNCWithResolver(t, nc, nil)
+}
+
+func reconcileNCWithResolver(t *testing.T, nc *v1alpha1.LambdaNodeClass, resolver ImageResolver, extraObjs ...runtime.Object) *v1alpha1.LambdaNodeClass {
 	t.Helper()
 	scheme := testScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nc).WithStatusSubresource(nc).Build()
-	r := &LambdaNodeClassReconciler{Client: client}
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nc).WithStatusSubresource(nc)
+	for _, obj := range extraObjs {
+		builder = builder.WithRuntimeObjects(obj)
+	}
+	client := builder.Build()
+	r := &LambdaNodeClassReconciler{Client: client, ImageResolver: resolver}
 
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: nc.Name},
@@ -46,6 +60,19 @@ func findCondition(nc *v1alpha1.LambdaNodeClass, condType string) *status.Condit
 		}
 	}
 	return nil
+}
+
+// fakeImageResolver implements ImageResolver for testing.
+type fakeImageResolver struct {
+	images []lambdaclient.Image
+	err    error
+}
+
+func (f *fakeImageResolver) ListImages(ctx context.Context) ([]lambdaclient.Image, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.images, nil
 }
 
 func TestReconcileValidNodeClass(t *testing.T) {
@@ -152,12 +179,11 @@ func TestReconcileImageBothIDAndFamily(t *testing.T) {
 	}
 }
 
-func TestReconcileInstanceTypeSelectorUnsupported(t *testing.T) {
+func TestReconcileInstanceTypeSelectorAccepted(t *testing.T) {
 	nc := &v1alpha1.LambdaNodeClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "its-unsupported"},
+		ObjectMeta: metav1.ObjectMeta{Name: "its-accepted"},
 		Spec: v1alpha1.LambdaNodeClassSpec{
 			Region:               "us-east-3",
-			InstanceType:         "gpu_1x_gh200",
 			SSHKeyNames:          []string{"my-key"},
 			InstanceTypeSelector: []string{"gpu_1x_gh200", "gpu_1x_a10"},
 		},
@@ -168,8 +194,8 @@ func TestReconcileInstanceTypeSelectorUnsupported(t *testing.T) {
 	if cond == nil {
 		t.Fatal("expected Ready condition")
 	}
-	if cond.Status != metav1.ConditionFalse {
-		t.Fatalf("expected Ready=False, got %s", cond.Status)
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected Ready=True (instanceTypeSelector is now supported), got %s: %s", cond.Status, cond.Message)
 	}
 }
 
@@ -203,13 +229,71 @@ func TestReconcileImageResolutionFamily(t *testing.T) {
 			Image:        &v1alpha1.LambdaImage{Family: "lambda-stack-24-04"},
 		},
 	}
+	// Without resolver, falls through to pass-through behavior.
 	result := reconcileNC(t, nc)
 
 	if result.Status.ResolvedImageFamily != "lambda-stack-24-04" {
 		t.Fatalf("expected ResolvedImageFamily=lambda-stack-24-04, got %s", result.Status.ResolvedImageFamily)
 	}
 	if result.Status.ResolvedImageID != "" {
-		t.Fatalf("expected empty ResolvedImageID, got %s", result.Status.ResolvedImageID)
+		t.Fatalf("expected empty ResolvedImageID (no resolver), got %s", result.Status.ResolvedImageID)
+	}
+}
+
+func TestReconcileImageResolutionFamilyWithResolver(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "img-family-resolved"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"my-key"},
+			Image:        &v1alpha1.LambdaImage{Family: "lambda-stack-24-04"},
+		},
+	}
+
+	resolver := &fakeImageResolver{
+		images: []lambdaclient.Image{
+			{ID: "img-old", Family: "lambda-stack-24-04", Region: lambdaclient.Region{Name: "us-east-3"}, UpdatedTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{ID: "img-latest", Family: "lambda-stack-24-04", Region: lambdaclient.Region{Name: "us-east-3"}, UpdatedTime: time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)},
+			{ID: "img-wrong-region", Family: "lambda-stack-24-04", Region: lambdaclient.Region{Name: "us-west-1"}, UpdatedTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{ID: "img-wrong-family", Family: "ubuntu-22-04", Region: lambdaclient.Region{Name: "us-east-3"}, UpdatedTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		},
+	}
+
+	result := reconcileNCWithResolver(t, nc, resolver)
+
+	if result.Status.ResolvedImageID != "img-latest" {
+		t.Fatalf("expected ResolvedImageID=img-latest, got %s", result.Status.ResolvedImageID)
+	}
+	if result.Status.ResolvedImageFamily != "lambda-stack-24-04" {
+		t.Fatalf("expected ResolvedImageFamily=lambda-stack-24-04, got %s", result.Status.ResolvedImageFamily)
+	}
+}
+
+func TestReconcileImageResolutionFamilyNoMatch(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "img-nomatch"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:       "us-east-3",
+			InstanceType: "gpu_1x_gh200",
+			SSHKeyNames:  []string{"my-key"},
+			Image:        &v1alpha1.LambdaImage{Family: "nonexistent-family"},
+		},
+	}
+
+	resolver := &fakeImageResolver{
+		images: []lambdaclient.Image{
+			{ID: "img-1", Family: "ubuntu-22-04", Region: lambdaclient.Region{Name: "us-east-3"}, UpdatedTime: time.Now()},
+		},
+	}
+
+	result := reconcileNCWithResolver(t, nc, resolver)
+
+	if result.Status.ResolvedImageID != "" {
+		t.Fatalf("expected empty ResolvedImageID for no match, got %s", result.Status.ResolvedImageID)
+	}
+	if result.Status.ResolvedImageFamily != "nonexistent-family" {
+		t.Fatalf("expected ResolvedImageFamily=nonexistent-family, got %s", result.Status.ResolvedImageFamily)
 	}
 }
 
@@ -233,5 +317,109 @@ func TestReconcileNoImageClearsStatus(t *testing.T) {
 	}
 	if result.Status.ResolvedImageFamily != "" {
 		t.Fatalf("expected empty ResolvedImageFamily, got %s", result.Status.ResolvedImageFamily)
+	}
+}
+
+// --- Phase 4: UserData from ConfigMap tests ---
+
+func TestReconcileUserDataMutuallyExclusive(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "both-userdata"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+			UserData:    "#cloud-config",
+			UserDataFrom: []v1alpha1.UserDataSource{
+				{Inline: "extra-data"},
+			},
+		},
+	}
+	result := reconcileNC(t, nc)
+
+	cond := findCondition(result, string(status.ConditionReady))
+	if cond == nil {
+		t.Fatal("expected Ready condition")
+	}
+	if cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected Ready=False for mutually exclusive, got %s", cond.Status)
+	}
+}
+
+func TestReconcileUserDataFromInline(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "ud-inline"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+			UserDataFrom: []v1alpha1.UserDataSource{
+				{Inline: "part-1"},
+				{Inline: "part-2"},
+			},
+		},
+	}
+	result := reconcileNC(t, nc)
+
+	expected := "part-1\npart-2"
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(expected)))
+
+	if result.Status.ResolvedUserData != expected {
+		t.Fatalf("expected resolved userData %q, got %q", expected, result.Status.ResolvedUserData)
+	}
+	if result.Status.ResolvedUserDataHash != expectedHash {
+		t.Fatalf("expected hash %q, got %q", expectedHash, result.Status.ResolvedUserDataHash)
+	}
+}
+
+func TestReconcileUserDataFromConfigMap(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-userdata", Namespace: "karpenter"},
+		Data: map[string]string{
+			"join.sh": "#!/bin/bash\necho join",
+		},
+	}
+
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "ud-cm"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+			UserDataFrom: []v1alpha1.UserDataSource{
+				{Inline: "#cloud-config"},
+				{ConfigMapRef: &v1alpha1.ConfigMapKeyRef{Name: "my-userdata", Namespace: "karpenter", Key: "join.sh"}},
+			},
+		},
+	}
+	result := reconcileNCWithResolver(t, nc, nil, cm)
+
+	expected := "#cloud-config\n#!/bin/bash\necho join"
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(expected)))
+
+	if result.Status.ResolvedUserData != expected {
+		t.Fatalf("expected resolved userData %q, got %q", expected, result.Status.ResolvedUserData)
+	}
+	if result.Status.ResolvedUserDataHash != expectedHash {
+		t.Fatalf("expected hash %q, got %q", expectedHash, result.Status.ResolvedUserDataHash)
+	}
+}
+
+func TestReconcileUserDataFromClearsWhenEmpty(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "ud-clear"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+		},
+		Status: v1alpha1.LambdaNodeClassStatus{
+			ResolvedUserData:     "old-data",
+			ResolvedUserDataHash: "old-hash",
+		},
+	}
+	result := reconcileNC(t, nc)
+
+	if result.Status.ResolvedUserData != "" {
+		t.Fatalf("expected empty ResolvedUserData, got %q", result.Status.ResolvedUserData)
+	}
+	if result.Status.ResolvedUserDataHash != "" {
+		t.Fatalf("expected empty ResolvedUserDataHash, got %q", result.Status.ResolvedUserDataHash)
 	}
 }

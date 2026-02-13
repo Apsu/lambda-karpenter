@@ -60,9 +60,13 @@
     "cluster": {
       "type": "object",
       "properties": {
-        "type": {"type": "string", "enum": ["", "kubeadm", "rke2"]},
+        "type": {"type": "string", "enum": ["", "kubeadm", "rke2", "eks-hybrid"]},
         "controllerIP": {"type": "string"},
-        "joinToken": {"type": "string"}
+        "joinToken": {"type": "string"},
+        "eksClusterName": {"type": "string"},
+        "eksRegion": {"type": "string"},
+        "eksSSMActivationCode": {"type": "string"},
+        "eksSSMActivationID": {"type": "string"}
       }
     },
     "secret": {
