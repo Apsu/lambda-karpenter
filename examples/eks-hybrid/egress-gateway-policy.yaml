@@ -1,0 +1,56 @@
+# CiliumEgressGatewayPolicy for routing pod traffic to the AWS VPC through
+# gateway nodes' WireGuard tunnels.
+#
+# How it works:
+# 1. Pods on any node send traffic to VPC_CIDR (e.g. 172.31.0.0/16)
+# 2. Cilium BPF intercepts the packet and tunnels it via VXLAN to a gateway node
+# 3. The gateway SNATs the source IP to its wg0 interface IP (e.g. 10.100.0.2)
+# 4. Traffic traverses WireGuard to the AWS jumpbox, which forwards into VPC (no masquerade)
+# 5. Reply to wg0 IP routes back via VPC route table → jumpbox → WireGuard → gateway
+# 6. Cilium de-SNATs back to the pod IP and tunnels via VXLAN to the worker
+#
+# Multiple gateway nodes: use the egressGateways (plural) list to distribute
+# pods across gateways via hash-based assignment (FNV-1a of endpoint UID).
+#
+# Prerequisites:
+# - Cilium installed with kubeProxyReplacement: true and egressGateway.enabled: true
+# - CiliumEgressGatewayPolicy CRD installed (included in Cilium Helm chart)
+# - Gateway nodes labeled with lambda.cloud/role=gateway
+# - Gateway nodes have wg0 interface with an Address (e.g. 10.100.0.2/30)
+
+apiVersion: cilium.io/v2
+kind: CiliumEgressGatewayPolicy
+metadata:
+  name: vpc-egress
+spec:
+  # Match all pods (empty matchLabels = all pods in all namespaces).
+  # Narrow with specific labels if only certain workloads need VPC access.
+  selectors:
+    - podSelector:
+        matchLabels: {}
+  # VPC CIDR(s) to route through the egress gateway.
+  destinationCIDRs:
+    - "172.31.0.0/16"
+  # Single gateway: all matched traffic goes through one gateway node.
+  egressGateway:
+    nodeSelector:
+      matchLabels:
+        lambda.cloud/role: gateway
+    # Cilium SNATs to the first IP on this interface.
+    # Do NOT specify both interface and egressIP (Cilium 1.19 rejects this).
+    interface: wg0
+
+  # --- Alternative: multiple gateways for load distribution ---
+  # Uncomment egressGateways (plural) and remove egressGateway (singular) above.
+  # Each entry selects a different gateway node. Cilium hashes each pod's
+  # endpoint UID to deterministically assign it to one gateway.
+  #
+  # egressGateways:
+  #   - nodeSelector:
+  #       matchLabels:
+  #         kubernetes.io/hostname: <gateway-node-1>
+  #     interface: wg0
+  #   - nodeSelector:
+  #       matchLabels:
+  #         kubernetes.io/hostname: <gateway-node-2>
+  #     interface: wg0

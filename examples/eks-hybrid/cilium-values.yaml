@@ -1,0 +1,50 @@
+# Cilium Helm values for EKS Hybrid with Lambda Cloud nodes.
+#
+# Requires: kubeProxyReplacement + egressGateway for pod-to-VPC routing.
+# Cilium runs in tunnel/VXLAN mode. The egress gateway tunnels pod traffic
+# destined for the VPC CIDR to gateway nodes, which SNAT it to their wg0 IP
+# and forward it through the WireGuard tunnel to the AWS jumpbox.
+#
+# Usage:
+#   helm install cilium cilium/cilium -n kube-system -f cilium-values.yaml
+#   kubectl apply -f egress-gateway-policy.yaml
+
+# --- Tunnel mode (required) ---
+# Lambda Cloud enforces strict source+destination IP filtering (anti-spoofing).
+# Only packets where both src and dst are Lambda instance IPs transit the
+# physical network. VXLAN encapsulation wraps pod/VPC IPs inside Lambda-to-Lambda
+# outer headers, satisfying the SDN filter.
+routingMode: tunnel
+tunnelProtocol: vxlan
+
+# --- Kube-proxy replacement (required for egress gateway) ---
+kubeProxyReplacement: true
+
+# --- Egress gateway ---
+egressGateway:
+  enabled: true
+
+# --- API server endpoint ---
+# Must be the EKS API FQDN (not ClusterIP). Cilium needs to reach the API
+# server to bootstrap before kube-proxy/KPR sets up service DNAT.
+k8sServiceHost: "<EKS_API_ENDPOINT_HOSTNAME>"
+k8sServicePort: 443
+
+# --- IPAM ---
+ipam:
+  operator:
+    clusterPoolIPv4PodCIDRList: "10.20.0.0/16"
+    clusterPoolIPv4MaskSize: 24
+
+# --- Masquerade ---
+# BPF masquerade is enabled by default with KPR. Pod-to-pod traffic within
+# the pod CIDR is not masqueraded. VPC-bound traffic is handled by the
+# egress gateway SNAT (to the gateway's wg0 IP), not by BPF masquerade.
+# No masquerade is needed on the jumpbox — the VPC route table has a route
+# for WG_TUNNEL_CIDR back to the jumpbox, and the cluster SG allows it.
+bpf:
+  masquerade: true
+
+# --- Operator ---
+operator:
+  replicas: 1

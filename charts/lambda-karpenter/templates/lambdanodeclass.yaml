@@ -24,10 +24,11 @@ spec:
   tags:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- if .Values.nodeClass.userData }}
   userData: |
-    {{- if .Values.nodeClass.userData }}
-    {{ .Values.nodeClass.userData | nindent 4 }}
-    {{- else }}
-    {{ include "lambda-karpenter.defaultUserData" . | nindent 4 }}
-    {{- end }}
+{{ .Values.nodeClass.userData | indent 4 }}
+  {{- else }}
+  userData: |
+{{ include "lambda-karpenter.defaultUserData" . | indent 4 }}
+  {{- end }}
 {{- end }}

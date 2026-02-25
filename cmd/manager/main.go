@@ -14,6 +14,7 @@ import (
 	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 	"github.com/lambdal/lambda-karpenter/internal/provider"
 	"github.com/lambdal/lambda-karpenter/internal/ratelimit"
+	"github.com/lambdal/lambda-karpenter/internal/ssm"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/overlay"
 	"sigs.k8s.io/karpenter/pkg/controllers"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
@@ -57,6 +58,16 @@ func main() {
 	listCache := lambdaclient.NewInstanceListCache(lambdaAPI, 5*time.Second)
 	unavailableOfferings := provider.NewUnavailableOfferings(cfg.UnavailableOfferingsTTL)
 	cloudProvider := provider.New(op.GetClient(), lambdaAPI, listCache, cache, unavailableOfferings, cfg.ClusterName, log.Log)
+
+	if cfg.EKSRegion != "" {
+		ssmClient, err := ssm.New(ctx, cfg.EKSRegion)
+		if err != nil {
+			log.Log.Error(err, "create SSM client")
+			os.Exit(1)
+		}
+		cloudProvider.WithSSM(ssmClient, cfg.EKSGatewayIP, cfg.EKSHybridNodesRoleARN)
+		log.Log.Info("EKS hybrid mode enabled", "region", cfg.EKSRegion, "gatewayIP", cfg.EKSGatewayIP)
+	}
 	overlayProvider := overlay.Decorate(cloudProvider, op.GetClient(), op.InstanceTypeStore)
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), overlayProvider)
 

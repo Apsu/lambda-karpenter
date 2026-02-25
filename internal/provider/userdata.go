@@ -13,6 +13,11 @@ type userDataContext struct {
 	NodeClaimName string
 	ImageFamily   string
 	ImageID       string
+
+	// EKS hybrid fields (populated when SSM activator is configured).
+	SSMActivationCode string
+	SSMActivationID   string
+	GatewayIP         string
 }
 
 // renderUserData renders Go template actions in userData. If the string

@@ -73,6 +73,14 @@ spec:
                   name: {{ required "config.apiTokenSecret.name is required (or set secret.create=true)" .Values.config.apiTokenSecret.name | quote }}
                   {{- end }}
                   key: {{ .Values.config.apiTokenSecret.key | quote }}
+          {{- if eq .Values.cluster.type "eks-hybrid" }}
+            - name: EKS_HYBRID_ROLE_ARN
+              value: {{ required "cluster.eksHybridNodesRoleARN is required for eks-hybrid" .Values.cluster.eksHybridNodesRoleARN | quote }}
+            - name: EKS_HYBRID_GATEWAY_IP
+              value: {{ required "cluster.eksGatewayIP is required for eks-hybrid" .Values.cluster.eksGatewayIP | quote }}
+            - name: EKS_HYBRID_REGION
+              value: {{ required "cluster.eksRegion is required for eks-hybrid" .Values.cluster.eksRegion | quote }}
+          {{- end }}
           {{- with .Values.extraEnv }}
           {{- toYaml . | nindent 12 }}
           {{- end }}

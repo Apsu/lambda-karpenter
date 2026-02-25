@@ -22,6 +22,9 @@ const (
 	launchMinIntervalSecondsEnv    = "LAMBDA_LAUNCH_MIN_INTERVAL_SECONDS"
 	instanceTypeCacheTTLEnv        = "INSTANCE_TYPE_CACHE_TTL"
 	unavailableOfferingsTTLEnv     = "UNAVAILABLE_OFFERINGS_TTL"
+	eksHybridRoleARNEnv            = "EKS_HYBRID_ROLE_ARN"
+	eksGatewayIPEnv                = "EKS_HYBRID_GATEWAY_IP"
+	eksRegionEnv                   = "EKS_HYBRID_REGION"
 )
 
 // Config defines provider configuration loaded from environment variables.
@@ -33,6 +36,11 @@ type Config struct {
 	LaunchMinInterval       time.Duration
 	InstanceTypeCacheTTL    time.Duration
 	UnavailableOfferingsTTL time.Duration
+
+	// EKS hybrid settings (all three must be set, or all empty).
+	EKSHybridNodesRoleARN string
+	EKSGatewayIP          string
+	EKSRegion             string
 }
 
 func Load() (Config, error) {
@@ -53,6 +61,22 @@ func Load() (Config, error) {
 	cfg.LaunchMinInterval = getenvDurationSecondsOr(launchMinIntervalSecondsEnv, defaultLaunchMinInterval)
 	cfg.InstanceTypeCacheTTL = getenvDurationOr(instanceTypeCacheTTLEnv, defaultInstanceTypeCacheTTL)
 	cfg.UnavailableOfferingsTTL = getenvDurationOr(unavailableOfferingsTTLEnv, defaultUnavailableOfferingsTTL)
+
+	cfg.EKSHybridNodesRoleARN = os.Getenv(eksHybridRoleARNEnv)
+	cfg.EKSGatewayIP = os.Getenv(eksGatewayIPEnv)
+	cfg.EKSRegion = os.Getenv(eksRegionEnv)
+
+	eksFields := []string{cfg.EKSHybridNodesRoleARN, cfg.EKSGatewayIP, cfg.EKSRegion}
+	setCount := 0
+	for _, v := range eksFields {
+		if v != "" {
+			setCount++
+		}
+	}
+	if setCount > 0 && setCount < len(eksFields) {
+		return cfg, fmt.Errorf("EKS hybrid config is incomplete: all of %s, %s, %s must be set together",
+			eksHybridRoleARNEnv, eksGatewayIPEnv, eksRegionEnv)
+	}
 
 	return cfg, nil
 }

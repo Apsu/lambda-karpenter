@@ -81,39 +81,73 @@ runcmd:
 
 {{/*
 EKS hybrid node registration user-data using nodeadm.
+SSM activation credentials are injected dynamically by the provider at launch
+time via Go template variables ({{ "{{" }} .SSMActivationCode {{ "}}" }}, etc.).
+Static config (cluster name, region, VPC CIDR) comes from Helm values.
 */}}
 {{- define "lambda-karpenter.userData.eks-hybrid" -}}
-#cloud-config
-package_update: true
-package_upgrade: false
+#!/bin/bash
+set -eux
 
-runcmd:
-  # Install nodeadm for EKS hybrid node registration.
-  - curl -fsSL "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm" -o /usr/local/bin/nodeadm
-  - chmod +x /usr/local/bin/nodeadm
+# --- Config (static from Helm) ---
+EKS_CLUSTER_NAME="{{ required "cluster.eksClusterName is required for eks-hybrid" .Values.cluster.eksClusterName }}"
+EKS_REGION="{{ required "cluster.eksRegion is required for eks-hybrid" .Values.cluster.eksRegion }}"
+K8S_VERSION="{{ .Values.cluster.eksK8sVersion | default "1.31" }}"
 
-  # Write nodeadm configuration.
-  - |
-      {{ include "lambda-karpenter.resolveInstanceID" . | nindent 6 }}
-      mkdir -p /etc/eks
-      cat <<CFG > /etc/eks/nodeadm-config.yaml
-      apiVersion: node.eks.aws/v1alpha1
-      kind: NodeConfig
-      spec:
-        cluster:
-          name: {{ required "cluster.eksClusterName is required for eks-hybrid" .Values.cluster.eksClusterName }}
-          region: {{ required "cluster.eksRegion is required for eks-hybrid" .Values.cluster.eksRegion }}
-        hybrid:
-          ssm:
-            activationCode: {{ required "cluster.eksSSMActivationCode is required for eks-hybrid" .Values.cluster.eksSSMActivationCode }}
-            activationId: {{ required "cluster.eksSSMActivationID is required for eks-hybrid" .Values.cluster.eksSSMActivationID }}
-        kubelet:
-          flags:
-            - --provider-id=lambda://${INSTANCE_ID}
-      CFG
+# --- Config (dynamic from provider at launch time) ---
+SSM_ACTIVATION_CODE="{{ "{{" }} .SSMActivationCode {{ "}}" }}"
+SSM_ACTIVATION_ID="{{ "{{" }} .SSMActivationID {{ "}}" }}"
+GATEWAY_IP="{{ "{{" }} .GatewayIP {{ "}}" }}"
+VPC_CIDR="{{ required "cluster.eksVPCCIDR is required for eks-hybrid" .Values.cluster.eksVPCCIDR }}"
 
-  # Register the node with EKS.
-  - /usr/local/bin/nodeadm init --config-source file:///etc/eks/nodeadm-config.yaml
+# --- 1. Remove conflicting Lambda Stack services and packages ---
+systemctl disable --now \
+  lambda-jupyter.service \
+  cloudflared.service cloudflared-update.service cloudflared-update.timer \
+  docker.service docker.socket \
+  glances.service \
+  postfix@-.service || true
+ip link delete docker0 2>/dev/null || true
+apt-get purge -y -qq \
+  docker-ce docker-ce-cli docker-buildx-plugin \
+  docker-compose-plugin docker-ce-rootless-extras \
+  cloudflared glances podman 2>/dev/null || true
+
+# --- 2. Add static route to VPC through gateway node ---
+ip route add ${VPC_CIDR} via ${GATEWAY_IP}
+
+# --- 3. Download and install nodeadm ---
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64)  ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+esac
+curl -fsSL "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/${ARCH}/nodeadm" -o /usr/local/bin/nodeadm
+chmod +x /usr/local/bin/nodeadm
+nodeadm install ${K8S_VERSION} --credential-provider ssm
+
+# --- 4. Resolve instance ID for provider-id ---
+{{ include "lambda-karpenter.resolveInstanceID" . }}
+
+# --- 5. Write nodeadm config and join cluster ---
+mkdir -p /etc/eks
+cat > /etc/eks/nodeadm-config.yaml <<EOF
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: ${EKS_CLUSTER_NAME}
+    region: ${EKS_REGION}
+  hybrid:
+    ssm:
+      activationCode: ${SSM_ACTIVATION_CODE}
+      activationId: ${SSM_ACTIVATION_ID}
+  kubelet:
+    flags:
+      - --provider-id=lambda://${INSTANCE_ID}
+EOF
+
+nodeadm init --config-source file:///etc/eks/nodeadm-config.yaml
 {{- end -}}
 
 {{/*
