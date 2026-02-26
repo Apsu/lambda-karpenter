@@ -28,6 +28,13 @@ func NewInstanceListCache(client *Client, ttl time.Duration) *InstanceListCache 
 	}
 }
 
+// Invalidate forces the next List call to refresh from the API.
+func (c *InstanceListCache) Invalidate() {
+	c.mu.Lock()
+	c.cachedAt = time.Time{}
+	c.mu.Unlock()
+}
+
 func (c *InstanceListCache) List(ctx context.Context) ([]Instance, error) {
 	c.mu.RLock()
 	if time.Since(c.cachedAt) < c.TTL && c.cache != nil {

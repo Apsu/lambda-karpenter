@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -105,7 +106,13 @@ func (r *LambdaNodeClassReconciler) resolveImage(ctx context.Context, nc *v1alph
 func (r *LambdaNodeClassReconciler) resolveUserData(ctx context.Context, nc *v1alpha1.LambdaNodeClass) error {
 	if len(nc.Spec.UserDataFrom) == 0 {
 		nc.Status.ResolvedUserData = ""
-		nc.Status.ResolvedUserDataHash = ""
+		// Compute hash for inline spec.userData so drift detection works
+		// for both the inline and userDataFrom paths.
+		if nc.Spec.UserData != "" {
+			nc.Status.ResolvedUserDataHash = fmt.Sprintf("%x", sha256.Sum256([]byte(nc.Spec.UserData)))
+		} else {
+			nc.Status.ResolvedUserDataHash = ""
+		}
 		return nil
 	}
 
@@ -147,7 +154,7 @@ func resolveLatestImageByFamily(images []lambdaclient.Image, family, region stri
 		if region != "" && img.Region.Name != "" && img.Region.Name != region {
 			continue
 		}
-		if img.UpdatedTime.After(bestTime) {
+		if img.UpdatedTime.After(bestTime) || (img.UpdatedTime.Equal(bestTime) && img.ID > bestID) {
 			bestTime = img.UpdatedTime
 			bestID = img.ID
 		}
@@ -158,7 +165,32 @@ func resolveLatestImageByFamily(images []lambdaclient.Image, family, region stri
 func (r *LambdaNodeClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.LambdaNodeClass{}).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.configMapToNodeClass)).
 		Complete(r)
+}
+
+// configMapToNodeClass maps a ConfigMap change to the LambdaNodeClass resources
+// that reference it via spec.userDataFrom[].configMapRef. This ensures the
+// controller re-resolves userData (and recomputes the hash) when a referenced
+// ConfigMap is updated.
+func (r *LambdaNodeClassReconciler) configMapToNodeClass(ctx context.Context, obj client.Object) []ctrl.Request {
+	logger := log.FromContext(ctx)
+	var nodeClasses v1alpha1.LambdaNodeClassList
+	if err := r.List(ctx, &nodeClasses); err != nil {
+		logger.Error(err, "failed to list LambdaNodeClasses for ConfigMap watch")
+		return nil
+	}
+
+	var requests []ctrl.Request
+	for _, nc := range nodeClasses.Items {
+		for _, src := range nc.Spec.UserDataFrom {
+			if src.ConfigMapRef != nil && src.ConfigMapRef.Name == obj.GetName() && src.ConfigMapRef.Namespace == obj.GetNamespace() {
+				requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{Name: nc.Name}})
+				break
+			}
+		}
+	}
+	return requests
 }
 
 func validateNodeClass(nc *v1alpha1.LambdaNodeClass) error {

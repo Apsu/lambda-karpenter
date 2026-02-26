@@ -319,13 +319,28 @@ Instead of a static SSM activation (which has registration limits and expiry), t
 - **Cleanup on delete**: `Provider.Delete()` calls `ssm:DeleteActivation` after terminating the instance
 - **No rotation needed**: Activations are ephemeral, created fresh for each node
 
-### Provider code changes needed
+### Startup taints (Cilium)
 
-1. **`internal/provider/provider.go`**: In `Create()`, call `ssm:CreateActivation` before building the launch request. Pass activation code/ID as new template variables.
-2. **`internal/provider/userdata.go`**: Add `SSMActivationCode`, `SSMActivationID`, and `GatewayIP` to `userDataContext`. `GatewayIP` is needed for the worker's host-level bootstrap static route.
-3. **`internal/provider/provider.go`**: In `Delete()`, call `ssm:DeleteActivation` for cleanup.
-4. **Helm chart `_userdata.tpl`**: Rewrite eks-hybrid template for workers: service cleanup, static route to gateway (for bootstrap), nodeadm download + install + init. No WireGuard.
-5. **Helm chart `values.yaml`**: Remove static `eksSSMActivationCode`/`eksSSMActivationID` values (no longer needed). Add `cluster.eksGatewayIP` for the gateway node's Lambda VPC IP.
+When Cilium runs with `set-cilium-node-taints: true` (the default for new installs), it adds
+`node.cilium.io/agent-not-ready:NoSchedule` to nodes until the Cilium agent is ready. This
+taint is **not** in Karpenter's built-in `KnownEphemeralTaints` list, so Karpenter's scheduler
+treats it as a permanent taint blocking pod scheduling — causing duplicate NodeClaims.
+
+The fix is to declare it as a `startupTaint` on the NodePool:
+
+```yaml
+spec:
+  template:
+    spec:
+      startupTaints:
+        - key: node.cilium.io/agent-not-ready
+          value: "true"
+          effect: NoSchedule
+```
+
+Karpenter applies startup taints during registration, filters them out in scheduling
+simulation, and waits for external agents (Cilium) to remove them before marking the node
+Initialized. The Helm chart `nodePool.startupTaints` value handles this automatically.
 
 ## Test Environment Reference
 

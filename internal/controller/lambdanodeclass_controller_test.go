@@ -402,6 +402,52 @@ func TestReconcileUserDataFromConfigMap(t *testing.T) {
 	}
 }
 
+func TestReconcileInlineUserDataHash(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "ud-inline-hash"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+			UserData:    "#!/bin/bash\necho hello",
+		},
+	}
+	result := reconcileNC(t, nc)
+
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte("#!/bin/bash\necho hello")))
+	if result.Status.ResolvedUserDataHash != expectedHash {
+		t.Fatalf("expected hash %q, got %q", expectedHash, result.Status.ResolvedUserDataHash)
+	}
+	// ResolvedUserData should remain empty for inline — the content is in spec.
+	if result.Status.ResolvedUserData != "" {
+		t.Fatalf("expected empty ResolvedUserData for inline userData, got %q", result.Status.ResolvedUserData)
+	}
+}
+
+func TestReconcileInlineUserDataHashChangesOnUpdate(t *testing.T) {
+	nc := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "ud-inline-change"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"my-key"},
+			UserData:    "#!/bin/bash\necho v1",
+		},
+	}
+	result1 := reconcileNC(t, nc)
+	hash1 := result1.Status.ResolvedUserDataHash
+
+	nc.Spec.UserData = "#!/bin/bash\necho v2"
+	result2 := reconcileNC(t, nc)
+	hash2 := result2.Status.ResolvedUserDataHash
+
+	if hash1 == hash2 {
+		t.Fatal("expected different hashes for different userData content")
+	}
+	expectedHash2 := fmt.Sprintf("%x", sha256.Sum256([]byte("#!/bin/bash\necho v2")))
+	if hash2 != expectedHash2 {
+		t.Fatalf("expected hash %q, got %q", expectedHash2, hash2)
+	}
+}
+
 func TestReconcileUserDataFromClearsWhenEmpty(t *testing.T) {
 	nc := &v1alpha1.LambdaNodeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "ud-clear"},

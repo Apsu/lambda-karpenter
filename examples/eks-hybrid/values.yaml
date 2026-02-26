@@ -33,6 +33,10 @@ nodeClass:
 nodePool:
   enabled: true
   name: default
+  startupTaints:
+    - key: node.cilium.io/agent-not-ready
+      value: "true"
+      effect: NoSchedule
   limits:
     nodes: 2
   disruption:

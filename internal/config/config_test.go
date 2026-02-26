@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,5 +100,60 @@ func TestLoadInvalidValues(t *testing.T) {
 	}
 	if cfg.LaunchMinInterval != defaultLaunchMinInterval {
 		t.Fatalf("expected default interval for negative value, got: %v", cfg.LaunchMinInterval)
+	}
+}
+
+func TestLoadEKSHybridPartial(t *testing.T) {
+	t.Setenv("LAMBDA_API_TOKEN", "tok")
+	t.Setenv("PROVIDER_CLUSTER_NAME", "c1")
+	// Set only one of the three required EKS fields.
+	t.Setenv("EKS_HYBRID_REGION", "us-west-2")
+	os.Unsetenv("EKS_HYBRID_ROLE_ARN")
+	os.Unsetenv("EKS_HYBRID_GATEWAY_IP")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for partial EKS hybrid config")
+	}
+	if !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("expected incomplete error, got: %v", err)
+	}
+}
+
+func TestLoadEKSHybridInvalidARN(t *testing.T) {
+	t.Setenv("LAMBDA_API_TOKEN", "tok")
+	t.Setenv("PROVIDER_CLUSTER_NAME", "c1")
+	t.Setenv("EKS_HYBRID_REGION", "us-west-2")
+	t.Setenv("EKS_HYBRID_GATEWAY_IP", "10.0.0.1")
+	t.Setenv("EKS_HYBRID_ROLE_ARN", "just-a-role-name") // not an ARN
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for non-ARN role")
+	}
+	if !strings.Contains(err.Error(), "ARN") {
+		t.Fatalf("expected ARN format error, got: %v", err)
+	}
+}
+
+func TestLoadEKSHybridValid(t *testing.T) {
+	t.Setenv("LAMBDA_API_TOKEN", "tok")
+	t.Setenv("PROVIDER_CLUSTER_NAME", "c1")
+	t.Setenv("EKS_HYBRID_REGION", "us-west-2")
+	t.Setenv("EKS_HYBRID_GATEWAY_IP", "10.0.0.1")
+	t.Setenv("EKS_HYBRID_ROLE_ARN", "arn:aws:iam::123456789012:role/HybridNodes")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EKSRegion != "us-west-2" {
+		t.Fatalf("expected region us-west-2, got %s", cfg.EKSRegion)
+	}
+	if cfg.EKSGatewayIP != "10.0.0.1" {
+		t.Fatalf("expected gateway 10.0.0.1, got %s", cfg.EKSGatewayIP)
+	}
+	if cfg.EKSHybridNodesRoleARN != "arn:aws:iam::123456789012:role/HybridNodes" {
+		t.Fatalf("expected ARN, got %s", cfg.EKSHybridNodesRoleARN)
 	}
 }

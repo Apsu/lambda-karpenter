@@ -75,6 +75,7 @@ spec:
   kubelet:
     flags:
       - --provider-id=lambda://${INSTANCE_ID}
+      - --register-with-taints=karpenter.sh/unregistered:NoExecute
 EOF
 
 nodeadm init --config-source file:///etc/eks/nodeadm-config.yaml
