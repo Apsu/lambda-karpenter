@@ -1249,7 +1249,7 @@ func TestProviderBuildLaunchRequestFullSpec(t *testing.T) {
 		},
 	}
 
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestProviderBuildLaunchRequestFilesystemMounts(t *testing.T) {
 		},
 	}
 
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1371,7 +1371,7 @@ func TestProviderBuildLaunchRequestImageFamily(t *testing.T) {
 		},
 	}
 
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1396,7 +1396,7 @@ func TestProviderBuildLaunchRequestMissingRegion(t *testing.T) {
 		Spec: v1alpha1.LambdaNodeClassSpec{InstanceType: "gpu_1x_gh200"},
 	}
 	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
-	_, err := p.buildLaunchRequest(nc, class)
+	_, err := p.buildLaunchRequest(nc, class, nil)
 	if err == nil || !strings.Contains(err.Error(), "region") {
 		t.Fatalf("expected region error, got: %v", err)
 	}
@@ -1408,7 +1408,7 @@ func TestProviderBuildLaunchRequestMissingInstanceType(t *testing.T) {
 		Spec: v1alpha1.LambdaNodeClassSpec{Region: "us-east-3"},
 	}
 	nc := &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
-	_, err := p.buildLaunchRequest(nc, class)
+	_, err := p.buildLaunchRequest(nc, class, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot determine instance type") {
 		t.Fatalf("expected 'cannot determine instance type' error, got: %v", err)
 	}
@@ -1525,7 +1525,7 @@ func TestBuildLaunchRequestFromNodeClaimRequirements(t *testing.T) {
 			},
 		},
 	}
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1549,7 +1549,7 @@ func TestBuildLaunchRequestFallbackToNodeClass(t *testing.T) {
 			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
 		},
 	}
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1569,7 +1569,7 @@ func TestBuildLaunchRequestNoInstanceTypeAnywhere(t *testing.T) {
 			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
 		},
 	}
-	_, err := p.buildLaunchRequest(nc, class)
+	_, err := p.buildLaunchRequest(nc, class, nil)
 	if err == nil {
 		t.Fatal("expected error when no instance type available")
 	}
@@ -1596,7 +1596,7 @@ func TestBuildLaunchRequestNodeClaimOverridesNodeClass(t *testing.T) {
 			},
 		},
 	}
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}
@@ -1622,7 +1622,7 @@ func TestBuildLaunchRequestUserDataTemplateRendered(t *testing.T) {
 			NodeClassRef: &v1.NodeClassReference{Group: v1alpha1.Group, Kind: "LambdaNodeClass", Name: "test"},
 		},
 	}
-	req, err := p.buildLaunchRequest(nc, class)
+	req, err := p.buildLaunchRequest(nc, class, nil)
 	if err != nil {
 		t.Fatalf("buildLaunchRequest: %v", err)
 	}

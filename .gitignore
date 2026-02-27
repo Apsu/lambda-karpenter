@@ -6,7 +6,7 @@
 bin/
 
 # Generated / temporary
-/tmp
+tmp/
 *.generated.yaml
 rke2.yaml
 *.kubeconfig

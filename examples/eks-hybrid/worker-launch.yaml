@@ -1,0 +1,11 @@
+name: eks-worker-001
+hostname: eks-worker-001
+region: us-midwest-3
+instanceType: gpu_8x_h100_sxm5
+imageFamily: lambda-stack-24-04
+sshKeyNames:
+  - Eve
+userDataFile: examples/eks-hybrid/worker-cloud-init.sh
+tags:
+  role: eks-worker
+  cluster: lambda-hybrid

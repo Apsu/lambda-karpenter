@@ -1,5 +1,9 @@
 # Example values override for EKS hybrid cluster type.
 # Usage: helm install lambda-karpenter charts/lambda-karpenter -f examples/eks-hybrid/values.yaml
+#
+# SSM activations are created dynamically by the provider (per-node, single-use).
+# The provider's ServiceAccount needs IRSA/Pod Identity mapped to an IAM role
+# with ssm:CreateActivation, ssm:DeleteActivation, and iam:PassRole.
 
 config:
   clusterName: my-eks-cluster
@@ -9,9 +13,11 @@ config:
 cluster:
   type: eks-hybrid
   eksClusterName: my-eks-cluster
-  eksRegion: us-east-1
-  eksSSMActivationCode: ""   # Set via --set or .env.local
-  eksSSMActivationID: ""     # Set via --set or .env.local
+  eksRegion: us-west-2
+  eksGatewayIP: ""             # Lambda VPC IP of gateway node (for worker bootstrap static route)
+  eksVPCCIDR: "172.31.0.0/16"  # AWS VPC CIDR (for worker bootstrap static route)
+  eksK8sVersion: "1.31"        # Kubernetes version for nodeadm
+  eksHybridNodesRoleARN: ""    # IAM role ARN for hybrid nodes (ssm:CreateActivation)
 
 nodeClass:
   enabled: true

@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: apsu/lambda-karpenter
-  tag: "v0.3.1"
+  tag: "v0.4.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -50,10 +50,12 @@ cluster:
   controllerIP: ""     # Internal IP of controller node (kubeadm/rke2)
   joinToken: ""        # Cluster join token (kubeadm/rke2)
   # EKS hybrid settings (required when cluster.type=eks-hybrid):
-  eksClusterName: ""         # EKS cluster name
-  eksRegion: ""              # AWS region for EKS
-  eksSSMActivationCode: ""   # SSM activation code for hybrid nodes
-  eksSSMActivationID: ""     # SSM activation ID for hybrid nodes
+  eksClusterName: ""           # EKS cluster name
+  eksRegion: ""                # AWS region for EKS
+  eksGatewayIP: ""             # Lambda VPC IP of gateway node
+  eksVPCCIDR: ""               # AWS VPC CIDR for static route
+  eksK8sVersion: "1.31"        # Kubernetes version for nodeadm
+  eksHybridNodesRoleARN: ""    # IAM role ARN for hybrid nodes
 
 # Lambda API token Secret. Set create=true to have the chart manage the Secret.
 secret:

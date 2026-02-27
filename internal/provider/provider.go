@@ -16,6 +16,7 @@ import (
 
 	"github.com/lambdal/lambda-karpenter/api/v1alpha1"
 	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
+	"github.com/lambdal/lambda-karpenter/internal/ssm"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
@@ -28,8 +29,9 @@ const (
 	tagNodePool      = "karpenter-sh-nodepool"
 	tagNodeClass     = "karpenter-lambda-cloud-lambdanodeclass"
 	tagCluster       = "karpenter-sh-cluster"
-	tagImageID       = "karpenter-lambda-cloud-image-id"
-	tagUserDataHash  = "karpenter-lambda-cloud-userdata-hash"
+	tagImageID          = "karpenter-lambda-cloud-image-id"
+	tagUserDataHash     = "karpenter-lambda-cloud-userdata-hash"
+	tagSSMActivationID  = "karpenter-lambda-cloud-ssm-activation-id"
 )
 
 type LambdaAPI interface {
@@ -45,6 +47,12 @@ type InstanceLister interface {
 	List(ctx context.Context) ([]lambdaclient.Instance, error)
 }
 
+// SSMActivator manages SSM activations for EKS hybrid nodes.
+type SSMActivator interface {
+	CreateActivation(ctx context.Context, iamRole string) (*ssm.Activation, error)
+	DeleteActivation(ctx context.Context, activationID string) error
+}
+
 var _ cloudprovider.CloudProvider = (*Provider)(nil)
 
 // Provider implements the Karpenter CloudProvider interface for Lambda Cloud.
@@ -56,6 +64,11 @@ type Provider struct {
 	unavailableOfferings *UnavailableOfferings
 	clusterName          string
 	log                  logr.Logger
+
+	// EKS hybrid fields (nil/empty when not in hybrid mode).
+	ssm       SSMActivator
+	gatewayIP string
+	ssmRole   string
 }
 
 func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, cache *lambdaclient.InstanceTypeCache, unavailableOfferings *UnavailableOfferings, clusterName string, log logr.Logger) *Provider {
@@ -68,6 +81,14 @@ func New(kubeClient client.Client, lambda LambdaAPI, listCache InstanceLister, c
 		clusterName:          clusterName,
 		log:                  log.WithName("lambda-provider"),
 	}
+}
+
+// WithSSM configures EKS hybrid mode with SSM activation support.
+func (p *Provider) WithSSM(ssmClient SSMActivator, gatewayIP, ssmRole string) *Provider {
+	p.ssm = ssmClient
+	p.gatewayIP = gatewayIP
+	p.ssmRole = ssmRole
+	return p
 }
 
 func (p *Provider) Name() string {
@@ -159,8 +180,21 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 		return p.nodeClaimFromInstance(nc, existing), nil
 	}
 
-	launchReq, err := p.buildLaunchRequest(nc, class)
+	// Create SSM activation for EKS hybrid nodes (single-use, 1h expiry).
+	var activation *ssm.Activation
+	if p.ssm != nil {
+		activation, err = p.ssm.CreateActivation(ctx, p.ssmRole)
+		if err != nil {
+			return nil, fmt.Errorf("creating SSM activation: %w", err)
+		}
+		log.Info("created SSM activation", "activationID", activation.ActivationID)
+	}
+
+	launchReq, err := p.buildLaunchRequest(nc, class, activation)
 	if err != nil {
+		if activation != nil {
+			_ = p.ssm.DeleteActivation(ctx, activation.ActivationID)
+		}
 		return nil, err
 	}
 
@@ -168,6 +202,9 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	ids, err := p.lambda.LaunchInstance(ctx, launchReq)
 	if err != nil {
 		instanceCreateTotal.WithLabelValues("error").Inc()
+		if activation != nil {
+			_ = p.ssm.DeleteActivation(ctx, activation.ActivationID)
+		}
 		if lambdaclient.IsCapacityError(err) {
 			p.unavailableOfferings.MarkUnavailable(launchReq.InstanceTypeName, launchReq.RegionName)
 			log.Info("marked offering unavailable", "instanceType", launchReq.InstanceTypeName, "region", launchReq.RegionName)
@@ -177,6 +214,9 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	}
 	if len(ids) == 0 {
 		instanceCreateTotal.WithLabelValues("error").Inc()
+		if activation != nil {
+			_ = p.ssm.DeleteActivation(ctx, activation.ActivationID)
+		}
 		return nil, fmt.Errorf("lambda launch returned no instance ids")
 	}
 	instanceCreateTotal.WithLabelValues("success").Inc()
@@ -215,6 +255,18 @@ func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 			return err
 		}
 		instanceDeleteTotal.WithLabelValues("success").Inc()
+
+		// Best-effort SSM activation cleanup.
+		if p.ssm != nil {
+			tags := tagsToMap(inst.Tags)
+			if actID := tags[tagSSMActivationID]; actID != "" {
+				if err := p.ssm.DeleteActivation(ctx, actID); err != nil {
+					log.Info("failed to delete SSM activation", "activationID", actID, "error", err)
+				} else {
+					log.Info("deleted SSM activation", "activationID", actID)
+				}
+			}
+		}
 		return nil
 	}
 }
@@ -331,7 +383,7 @@ func instanceTypeFromNodeClaim(nc *v1.NodeClaim) string {
 	return ""
 }
 
-func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.LambdaNodeClass) (lambdaclient.LaunchRequest, error) {
+func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.LambdaNodeClass, activation *ssm.Activation) (lambdaclient.LaunchRequest, error) {
 	if class.Spec.Region == "" {
 		return lambdaclient.LaunchRequest{}, fmt.Errorf("nodeclass region is required")
 	}
@@ -398,6 +450,11 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		udCtx.ImageFamily = class.Spec.Image.Family
 		udCtx.ImageID = class.Spec.Image.ID
 	}
+	if activation != nil {
+		udCtx.SSMActivationCode = activation.ActivationCode
+		udCtx.SSMActivationID = activation.ActivationID
+		udCtx.GatewayIP = p.gatewayIP
+	}
 	renderedUserData, err := renderUserData(rawUserData, udCtx)
 	if err != nil {
 		return lambdaclient.LaunchRequest{}, fmt.Errorf("rendering userData template: %w", err)
@@ -455,6 +512,10 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 	// Tag with userData hash for drift detection (userDataFrom path).
 	if userDataHash != "" {
 		req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagUserDataHash, Value: userDataHash})
+	}
+	// Tag with SSM activation ID so Delete can clean it up.
+	if activation != nil {
+		req.Tags = append(req.Tags, lambdaclient.TagEntry{Key: tagSSMActivationID, Value: activation.ActivationID})
 	}
 	return req, nil
 }

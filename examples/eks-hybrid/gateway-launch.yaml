@@ -1,0 +1,11 @@
+name: eks-gateway-001
+hostname: eks-gateway-001
+region: us-midwest-3
+instanceType: gpu_8x_h100_sxm5
+imageFamily: lambda-stack-24-04
+sshKeyNames:
+  - Eve
+userDataFile: examples/eks-hybrid/gateway-cloud-init.sh
+tags:
+  role: eks-gateway
+  cluster: lambda-hybrid
