@@ -1965,3 +1965,144 @@ func TestCreateCapacityErrorMarksOfferingUnavailable(t *testing.T) {
 		t.Fatal("expected offering to be unavailable after capacity error")
 	}
 }
+
+func TestProviderListRehydratesRequirementsAndNodeClassRef(t *testing.T) {
+	client := fake.NewClientBuilder().Build()
+	fakeAPI := &fakeLambda{
+		listInstances: []lambdaclient.Instance{
+			{
+				ID: "i-1", Status: "active",
+				Type:   lambdaclient.InstanceTypeRef{Name: "gpu_1x_gh200", Specs: gh200Specs},
+				Region: lambdaclient.Region{Name: "us-east-3"},
+				Tags: []lambdaclient.TagEntry{
+					{Key: "karpenter-sh-cluster", Value: "test"},
+					{Key: "karpenter-sh-nodeclaim", Value: "pool-a-xyz"},
+					{Key: "karpenter-sh-nodepool", Value: "pool-a"},
+					{Key: "karpenter-lambda-cloud-lambdanodeclass", Value: "lambda-gh200"},
+				},
+			},
+		},
+	}
+	p := New(client, fakeAPI, fakeAPI, nil, NewUnavailableOfferings(5*time.Minute), "test", testLog)
+
+	items, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	nc := items[0]
+
+	// Name must be rehydrated from the nodeclaim tag.
+	if nc.Name != "pool-a-xyz" {
+		t.Fatalf("expected Name pool-a-xyz, got %q", nc.Name)
+	}
+
+	// Spec.Requirements must include instance type.
+	itFromReq := instanceTypeFromNodeClaim(nc)
+	if itFromReq != "gpu_1x_gh200" {
+		t.Fatalf("expected instance type requirement gpu_1x_gh200, got %q", itFromReq)
+	}
+
+	// Spec.NodeClassRef must be rehydrated from tags.
+	if nc.Spec.NodeClassRef == nil {
+		t.Fatal("expected NodeClassRef to be rehydrated")
+	}
+	if nc.Spec.NodeClassRef.Group != v1alpha1.Group {
+		t.Fatalf("expected group %s, got %s", v1alpha1.Group, nc.Spec.NodeClassRef.Group)
+	}
+	if nc.Spec.NodeClassRef.Kind != "LambdaNodeClass" {
+		t.Fatalf("expected kind LambdaNodeClass, got %s", nc.Spec.NodeClassRef.Kind)
+	}
+	if nc.Spec.NodeClassRef.Name != "lambda-gh200" {
+		t.Fatalf("expected name lambda-gh200, got %s", nc.Spec.NodeClassRef.Name)
+	}
+}
+
+func TestBuildLaunchRequestTagCollision(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	gv := schema.GroupVersion{Group: apis.Group, Version: "v1"}
+	metav1.AddToGroupVersion(scheme, gv)
+	scheme.AddKnownTypes(gv, &v1.NodePool{}, &v1.NodePoolList{}, &v1.NodeClaim{}, &v1.NodeClaimList{})
+
+	// User tag that sanitizes to same key as system tag.
+	class := &v1alpha1.LambdaNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "lambda-gh200"},
+		Spec: v1alpha1.LambdaNodeClassSpec{
+			Region:      "us-east-3",
+			SSHKeyNames: []string{"Eve"},
+			Tags: map[string]string{
+				"karpenter.sh/nodeclaim": "evil-value",
+				"karpenter_sh_cluster":   "evil-cluster",
+			},
+		},
+	}
+
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(class).Build()
+	p := New(kubeClient, nil, nil, nil, nil, "real-cluster", testLog)
+
+	nc := &v1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "real-nodeclaim",
+			Labels: map[string]string{v1.NodePoolLabelKey: "pool-a"},
+		},
+		Spec: v1.NodeClaimSpec{
+			NodeClassRef: &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  "lambda-gh200",
+			},
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{
+				{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
+					Values:   []string{"gpu_1x_gh200"},
+				},
+			},
+		},
+	}
+
+	req, err := p.buildLaunchRequest(nc, class, nil)
+	if err != nil {
+		t.Fatalf("buildLaunchRequest: %v", err)
+	}
+
+	// Build a map of sanitized tag key → value from the launch tags.
+	tagsByKey := map[string]string{}
+	for _, tag := range req.Tags {
+		if _, exists := tagsByKey[tag.Key]; exists {
+			t.Fatalf("duplicate sanitized tag key %q in launch tags", tag.Key)
+		}
+		tagsByKey[tag.Key] = tag.Value
+	}
+
+	// System tags must win over colliding user tags.
+	if tagsByKey["karpenter-sh-nodeclaim"] != "real-nodeclaim" {
+		t.Fatalf("expected system tag for nodeclaim, got %q", tagsByKey["karpenter-sh-nodeclaim"])
+	}
+	if tagsByKey["karpenter-sh-cluster"] != "real-cluster" {
+		t.Fatalf("expected system tag for cluster, got %q", tagsByKey["karpenter-sh-cluster"])
+	}
+}
+
+func TestDeepCopyPublicIP(t *testing.T) {
+	boolTrue := true
+	original := &v1alpha1.LambdaNodeClassSpec{
+		Region:      "us-east-3",
+		SSHKeyNames: []string{"Eve"},
+		PublicIP:    &boolTrue,
+	}
+	copied := original.DeepCopy()
+	if copied.PublicIP == nil || *copied.PublicIP != true {
+		t.Fatal("expected PublicIP to be copied as true")
+	}
+	// Mutate the copy — original must not change.
+	*copied.PublicIP = false
+	if *original.PublicIP != true {
+		t.Fatal("mutating copy affected original — PublicIP not deep-copied")
+	}
+}

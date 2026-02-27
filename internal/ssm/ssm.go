@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 // Activation holds the code and ID returned by SSM CreateActivation.
@@ -72,8 +73,9 @@ func (c *Client) DeleteActivation(ctx context.Context, activationID string) erro
 	})
 	if err != nil {
 		// Ignore "not found" — the activation may have expired or been cleaned up.
-		var notFound interface{ ErrorCode() string }
-		if errors.As(err, &notFound) && notFound.ErrorCode() == "InvalidActivation" {
+		var invalidActivation *types.InvalidActivation
+		var invalidActivationID *types.InvalidActivationId
+		if errors.As(err, &invalidActivation) || errors.As(err, &invalidActivationID) {
 			return nil
 		}
 		return fmt.Errorf("ssm DeleteActivation %s: %w", activationID, err)

@@ -47,6 +47,12 @@ type InstanceLister interface {
 	List(ctx context.Context) ([]lambdaclient.Instance, error)
 }
 
+// instanceListInvalidator is an optional interface for InstanceLister
+// implementations that support cache invalidation.
+type instanceListInvalidator interface {
+	Invalidate()
+}
+
 // SSMActivator manages SSM activations for EKS hybrid nodes.
 type SSMActivator interface {
 	CreateActivation(ctx context.Context, iamRole string) (*ssm.Activation, error)
@@ -93,6 +99,15 @@ func (p *Provider) WithSSM(ssmClient SSMActivator, gatewayIP, ssmRole string) *P
 
 func (p *Provider) Name() string {
 	return providerName
+}
+
+// invalidateListCache invalidates the instance list cache so the next List
+// call fetches fresh data. Called after Create/Delete to close the stale-data
+// window where newly launched or terminated instances are invisible.
+func (p *Provider) invalidateListCache() {
+	if inv, ok := p.listCache.(instanceListInvalidator); ok {
+		inv.Invalidate()
+	}
 }
 
 func (p *Provider) GetSupportedNodeClasses() []status.Object {
@@ -148,7 +163,11 @@ func (p *Provider) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (clou
 	// Check userData drift: compare the hash stored at launch time (in instance tag)
 	// against the current resolved hash in the NodeClass status.
 	if class.Status.ResolvedUserDataHash != "" {
-		if inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim); err == nil && inst != nil {
+		inst, err := p.resolveInstanceForNodeClaim(ctx, nodeClaim)
+		if err != nil {
+			return "", fmt.Errorf("resolving instance for userData drift check: %w", err)
+		}
+		if inst != nil {
 			tags := tagsToMap(inst.Tags)
 			if launchHash := tags[tagUserDataHash]; launchHash != "" && launchHash != class.Status.ResolvedUserDataHash {
 				return "UserDataDrifted", nil
@@ -222,8 +241,15 @@ func (p *Provider) Create(ctx context.Context, nodeClaim *v1.NodeClaim) (*v1.Nod
 	instanceCreateTotal.WithLabelValues("success").Inc()
 
 	log.Info("instance launched", "instanceID", ids[0])
+	p.invalidateListCache()
+
 	inst, err := p.lambda.GetInstance(ctx, ids[0])
 	if err != nil {
+		// Instance is running but we can't fetch details. Clean up the SSM
+		// activation since Karpenter will retry and create a new one.
+		if activation != nil {
+			_ = p.ssm.DeleteActivation(ctx, activation.ActivationID)
+		}
 		return nil, err
 	}
 
@@ -255,6 +281,7 @@ func (p *Provider) Delete(ctx context.Context, nodeClaim *v1.NodeClaim) error {
 			return err
 		}
 		instanceDeleteTotal.WithLabelValues("success").Inc()
+		p.invalidateListCache()
 
 		// Best-effort SSM activation cleanup.
 		if p.ssm != nil {
@@ -398,44 +425,47 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		return lambdaclient.LaunchRequest{}, fmt.Errorf("cannot determine instance type: neither nodeclaim requirements nor nodeclass spec provide one")
 	}
 
-	tags := map[string]string{}
+	// Build launch tags. User-provided keys are sanitized and may collide
+	// with system tag keys; system tags always take precedence.
+	sanitizedTags := make(map[string]string)
 	if class.Spec.Tags != nil {
 		for k, v := range class.Spec.Tags {
-			tags[k] = v
+			key := sanitizeTagKey(k)
+			if key != "" {
+				sanitizedTags[key] = v
+			}
 		}
 	}
+	// System tags (pre-sanitized keys) overwrite any colliding user tags.
 	if nodeClaim != nil {
 		if nodeClaim.Name != "" {
-			tags[tagNodeClaim] = nodeClaim.Name
+			sanitizedTags[tagNodeClaim] = nodeClaim.Name
 		}
 		if nodeClaim.Labels != nil {
 			if np, ok := nodeClaim.Labels[v1.NodePoolLabelKey]; ok {
-				tags[tagNodePool] = np
+				sanitizedTags[tagNodePool] = np
 			}
 			if nc, ok := nodeClaim.Labels[v1.NodeClassLabelKey(nodeClaim.Spec.NodeClassRef.GroupKind())]; ok {
-				tags[tagNodeClass] = nc
+				sanitizedTags[tagNodeClass] = nc
 			}
 		}
 	}
 	if p.clusterName != "" {
-		tags[tagCluster] = p.clusterName
+		sanitizedTags[tagCluster] = p.clusterName
 	}
 
-	launchTags := make([]lambdaclient.TagEntry, 0, len(tags))
-	for k, v := range tags {
-		key := sanitizeTagKey(k)
-		if key == "" {
-			continue
-		}
-		launchTags = append(launchTags, lambdaclient.TagEntry{Key: key, Value: v})
+	launchTags := make([]lambdaclient.TagEntry, 0, len(sanitizedTags))
+	for k, v := range sanitizedTags {
+		launchTags = append(launchTags, lambdaclient.TagEntry{Key: k, Value: v})
 	}
 
 	// Determine userData source: prefer resolved content from userDataFrom, fall back to inline.
+	// The hash always comes from status — the controller computes it for both
+	// inline spec.userData and the userDataFrom path.
 	var rawUserData string
-	var userDataHash string
+	userDataHash := class.Status.ResolvedUserDataHash
 	if class.Status.ResolvedUserData != "" {
 		rawUserData = class.Status.ResolvedUserData
-		userDataHash = class.Status.ResolvedUserDataHash
 	} else {
 		rawUserData = class.Spec.UserData
 	}
@@ -448,12 +478,22 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 	}
 	if class.Spec.Image != nil {
 		udCtx.ImageFamily = class.Spec.Image.Family
-		udCtx.ImageID = class.Spec.Image.ID
+		udCtx.ImageID = class.Status.ResolvedImageID
+		if udCtx.ImageID == "" {
+			udCtx.ImageID = class.Spec.Image.ID
+		}
 	}
 	if activation != nil {
 		udCtx.SSMActivationCode = activation.ActivationCode
 		udCtx.SSMActivationID = activation.ActivationID
 		udCtx.GatewayIP = p.gatewayIP
+		// Warn if userData doesn't reference SSM template variables — the
+		// activation will be created and tagged but never injected into the
+		// boot script, so the node will never register with EKS.
+		if !strings.Contains(rawUserData, "SSMActivation") {
+			p.log.Info("WARNING: EKS hybrid mode is active but userData does not reference SSMActivation template variables; node may fail to register",
+				"nodeclaim", nodeClaim.Name)
+		}
 	}
 	renderedUserData, err := renderUserData(rawUserData, udCtx)
 	if err != nil {
@@ -504,7 +544,8 @@ func (p *Provider) buildLaunchRequest(nodeClaim *v1.NodeClaim, class *v1alpha1.L
 		}
 	}
 	if class.Spec.PublicIP != nil {
-		req.PublicIP = class.Spec.PublicIP
+		b := *class.Spec.PublicIP
+		req.PublicIP = &b
 	}
 	if class.Spec.Pool != "" {
 		req.Pool = class.Spec.Pool
@@ -614,14 +655,30 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 			labels[k] = v
 		}
 	}
-	// Rehydrate core labels from instance tags when seed is nil (List/Get path).
+	// Rehydrate core labels, Spec.Requirements, and Spec.NodeClassRef from
+	// instance tags when seed is nil (List/Get path).
 	if seed == nil {
 		tags := tagsToMap(inst.Tags)
+		if claimName := tags[tagNodeClaim]; claimName != "" {
+			nc.Name = claimName
+		}
 		if np := tags[tagNodePool]; np != "" {
 			labels[v1.NodePoolLabelKey] = np
 		}
 		if ncName := tags[tagNodeClass]; ncName != "" {
 			labels[v1.NodeClassLabelKey(schema.GroupKind{Group: v1alpha1.Group, Kind: "LambdaNodeClass"})] = ncName
+			nc.Spec.NodeClassRef = &v1.NodeClassReference{
+				Group: v1alpha1.Group,
+				Kind:  "LambdaNodeClass",
+				Name:  ncName,
+			}
+		}
+		nc.Spec.Requirements = []v1.NodeSelectorRequirementWithMinValues{
+			{
+				Key:      corev1.LabelInstanceTypeStable,
+				Operator: corev1.NodeSelectorOpIn,
+				Values:   []string{inst.Type.Name},
+			},
 		}
 	}
 	// Lambda only has on-demand capacity.
@@ -634,6 +691,7 @@ func (p *Provider) nodeClaimFromInstance(seed *v1.NodeClaim, inst *lambdaclient.
 	}
 
 	nc.Labels = labels
+
 	nc.Status.ProviderID = providerIDForInstance(inst)
 
 	// Populate capacity so Karpenter's scheduler knows this pending NodeClaim

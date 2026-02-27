@@ -2,8 +2,8 @@ apiVersion: v2
 name: lambda-karpenter
 description: Karpenter cloud provider for Lambda Cloud GPU instances
 type: application
-version: v0.4.0
-appVersion: "v0.4.0"
+version: v0.4.1
+appVersion: "v0.4.1"
 home: https://github.com/lambdal/lambda-karpenter
 sources:
   - https://github.com/lambdal/lambda-karpenter

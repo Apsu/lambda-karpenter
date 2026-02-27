@@ -87,11 +87,11 @@ helm install lambda-karpenter charts/lambda-karpenter \
   --set secret.create=true --set secret.token=$LAMBDA_API_TOKEN
 ```
 
-The Helm chart includes built-in userData templates for kubeadm and RKE2 worker
-joins, selected via `cluster.type`. It can optionally create the API token Secret,
-a LambdaNodeClass, and a NodePool — all gated on values. Override with
-`nodeClass.userData` for custom cloud-init. See `charts/lambda-karpenter/values.yaml`
-for all options.
+The Helm chart includes built-in userData templates for kubeadm, RKE2, and EKS
+hybrid worker joins, selected via `cluster.type`. It can optionally create the API
+token Secret, a LambdaNodeClass, and a NodePool — all gated on values. Override
+with `nodeClass.userData` for custom cloud-init. See `charts/lambda-karpenter/values.yaml`
+for all options. For EKS hybrid setup, see [EKS.md](EKS.md).
 
 ### 3. Verify
 
@@ -240,7 +240,11 @@ These are set in the Helm chart values and consumed by `cmd/manager`:
 | `LAMBDA_API_RPS` | `1` | Global API rate limit (requests/sec) |
 | `LAMBDA_LAUNCH_MIN_INTERVAL_SECONDS` | `5` | Minimum seconds between launches |
 | `INSTANCE_TYPE_CACHE_TTL` | `10m` | Instance type cache TTL |
+| `UNAVAILABLE_OFFERINGS_TTL` | `3m` | TTL for caching unavailable instance offerings |
 | `LOG_DEV_MODE` | `false` | Set `true` for human-readable logs |
+| `EKS_HYBRID_ROLE_ARN` | | IAM role ARN for hybrid nodes (eks-hybrid only) |
+| `EKS_HYBRID_GATEWAY_IP` | | Lambda VPC IP of gateway node (eks-hybrid only) |
+| `EKS_HYBRID_REGION` | | AWS region for SSM API calls (eks-hybrid only) |
 
 ## GPU workloads
 
@@ -267,8 +271,15 @@ component (coredns, ingress, metrics-server, etc.).
   the NodeClass pins to that type (backward compatible).
 - **userData supports Go templates.** Use `{{.Region}}`, `{{.ClusterName}}`,
   `{{.NodeClaimName}}`, `{{.ImageFamily}}`, `{{.ImageID}}` in `spec.userData`.
-  Templates are rendered at launch time. Strings without `{{` pass through
-  unchanged.
+  For EKS hybrid, `{{.SSMActivationCode}}`, `{{.SSMActivationID}}`, and
+  `{{.GatewayIP}}` are also available. Templates are rendered at launch time.
+  Strings without `{{` pass through unchanged.
+- **userDataFrom** allows composing userData from multiple ConfigMaps and
+  inline fragments via `spec.userDataFrom[]`. Parts are concatenated in order.
+  Each entry is either `{ inline: "..." }` or
+  `{ configMapRef: { name, namespace, key } }`. Mutually exclusive with
+  `spec.userData`. The controller watches referenced ConfigMaps and
+  recomputes the userData hash when they change, triggering drift detection.
 - Worker nodes join the cluster with `provider-id=lambda://<instance-id>`. The
   example cloud-init reads the instance ID from cloud-init metadata and strips
   dashes to match the API format.
@@ -278,3 +289,12 @@ component (coredns, ingress, metrics-server, etc.).
   per region (`us-east-3` becomes `us-east-3a`).
 - Architecture is inferred from instance type name: `gh200` maps to `arm64`,
   everything else to `amd64`.
+- **startupTaints** on the NodePool tell Karpenter to filter specific taints
+  during scheduling simulation and wait for external agents to remove them. Use
+  this for Cilium's `node.cilium.io/agent-not-ready:NoSchedule` taint to
+  prevent duplicate NodeClaims during node registration. See
+  [EKS.md](EKS.md#startup-taints-cilium) for details.
+- **EKS Hybrid Nodes** are supported via `cluster.type: eks-hybrid`. The
+  provider dynamically creates per-node SSM activations, injects credentials
+  into the cloud-init template, and cleans up activations on delete. See
+  [EKS.md](EKS.md) for the full architecture and setup guide.

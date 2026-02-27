@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: apsu/lambda-karpenter
-  tag: "v0.4.0"
+  tag: "v0.4.1"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -80,6 +80,10 @@ nodePool:
   name: "default"
   instanceTypes: []    # e.g. ["gpu_1x_gh200"]
   architecture: ""     # e.g. "arm64"
+  startupTaints:       # Taints applied during node initialization, removed by external agents
+    - key: node.cilium.io/agent-not-ready
+      value: "true"
+      effect: NoSchedule
   limits:
     nodes: 1
   disruption:

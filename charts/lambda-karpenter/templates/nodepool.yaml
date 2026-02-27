@@ -33,6 +33,10 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
+      {{- with .Values.nodePool.startupTaints }}
+      startupTaints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   disruption:
     consolidationPolicy: {{ .Values.nodePool.disruption.consolidationPolicy }}
     consolidateAfter: {{ .Values.nodePool.disruption.consolidateAfter }}

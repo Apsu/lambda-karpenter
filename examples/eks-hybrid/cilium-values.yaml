@@ -45,6 +45,13 @@ ipam:
 bpf:
   masquerade: true
 
+# --- Node taints ---
+# Cilium adds node.cilium.io/agent-not-ready:NoSchedule until the agent is
+# ready. This is the default (set-cilium-node-taints: true). The matching
+# startupTaint must be declared on the Karpenter NodePool so Karpenter filters
+# it during scheduling simulation; otherwise duplicate NodeClaims are created.
+# See the example nodepool.yaml and the chart's nodePool.startupTaints value.
+
 # --- Operator ---
 operator:
   replicas: 1

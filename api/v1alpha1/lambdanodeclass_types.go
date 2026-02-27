@@ -169,6 +169,10 @@ func (in *LambdaNodeClassSpec) DeepCopy() *LambdaNodeClassSpec {
 			Family: in.Image.Family,
 		}
 	}
+	if in.PublicIP != nil {
+		b := *in.PublicIP
+		out.PublicIP = &b
+	}
 	if in.UserDataFrom != nil {
 		out.UserDataFrom = make([]UserDataSource, len(in.UserDataFrom))
 		for i, src := range in.UserDataFrom {

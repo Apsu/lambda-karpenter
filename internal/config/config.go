@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -76,6 +77,10 @@ func Load() (Config, error) {
 	if setCount > 0 && setCount < len(eksFields) {
 		return cfg, fmt.Errorf("EKS hybrid config is incomplete: all of %s, %s, %s must be set together",
 			eksHybridRoleARNEnv, eksGatewayIPEnv, eksRegionEnv)
+	}
+	if cfg.EKSHybridNodesRoleARN != "" && !strings.HasPrefix(cfg.EKSHybridNodesRoleARN, "arn:") {
+		return cfg, fmt.Errorf("%s must be an IAM role ARN (arn:aws:iam::...:role/...), got %q",
+			eksHybridRoleARNEnv, cfg.EKSHybridNodesRoleARN)
 	}
 
 	return cfg, nil
