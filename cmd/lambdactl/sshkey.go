@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"text/tabwriter"
 )
 
 // SSHKeyCmd is the parent command for SSH key management.
@@ -24,16 +23,15 @@ func (c *SSHKeyListCmd) Run() error {
 	keys, err := client.ListSSHKeys(ctx)
 	fatalIf(err)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tPUBLIC KEY")
+	var rows [][]string
 	for _, k := range keys {
 		pub := k.PublicKey
 		if len(pub) > 60 {
 			pub = pub[:57] + "..."
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", k.ID, k.Name, pub)
+		rows = append(rows, []string{k.ID, k.Name, pub})
 	}
-	w.Flush()
+	printListTable([]string{"ID", "NAME", "PUBLIC KEY"}, rows)
 	return nil
 }
 
@@ -57,9 +55,12 @@ func (c *SSHKeyAddCmd) Run() error {
 	key, err := client.AddSSHKey(ctx, c.Name, pubKey)
 	fatalIf(err)
 
-	fmt.Printf("id:         %s\n", key.ID)
-	fmt.Printf("name:       %s\n", key.Name)
-	fmt.Printf("public_key: %s\n", key.PublicKey)
+	fields := [][]string{
+		{"ID", key.ID},
+		{"Name", key.Name},
+		{"Public Key", key.PublicKey},
+	}
+	printDetailTable(fields)
 	if key.PrivateKey != "" {
 		fmt.Printf("\nprivate_key:\n%s\n", key.PrivateKey)
 		fmt.Fprintln(os.Stderr, "WARNING: Save this private key now — Lambda does not store it.")
@@ -69,7 +70,7 @@ func (c *SSHKeyAddCmd) Run() error {
 
 type SSHKeyDeleteCmd struct {
 	APIFlags
-	ID      string `name:"id" required:"" help:"SSH key ID."`
+	ID      string `arg:"" help:"SSH key ID."`
 	Confirm bool   `name:"confirm" help:"Skip interactive confirmation."`
 }
 

@@ -24,8 +24,8 @@ type K8sCmd struct {
 	Kubeconfig KubeconfigCmd `cmd:"" help:"Extract kubeconfig from existing remote RKE2 node."`
 	Gather     GatherCmd     `cmd:"" help:"SSH into controller and populate missing cluster.yaml fields (kubeconfig, internalIP)."`
 	User       UserCmd       `cmd:"" help:"Manage per-user SA + token kubeconfigs."`
-	Status StatusCmd `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
-	Wait   WaitCmd   `cmd:"" help:"Wait for NodeClaim to be ready."`
+	Status    StatusCmd    `cmd:"" help:"Show LambdaNodeClass, NodePool, NodeClaim status."`
+	NodeClaim NodeClaimCmd `cmd:"" name:"nodeclaim" help:"Show or wait for NodeClaims."`
 }
 
 // K8sFlags are shared flags for k8s resource commands.
@@ -89,16 +89,79 @@ func (c *StatusCmd) Run() error {
 	return nil
 }
 
-type WaitCmd struct {
+type NodeClaimCmd struct {
 	K8sFlags
-	NodeClaim string        `name:"nodeclaim" required:"" help:"NodeClaim name."`
-	Timeout   time.Duration `name:"timeout" default:"10m" help:"Timeout."`
+	Name    string        `arg:"" optional:"" help:"NodeClaim name."`
+	Wait    bool          `name:"wait" short:"w" help:"Wait for NodeClaim(s) to be initialized."`
+	Timeout time.Duration `name:"timeout" default:"10m" help:"Timeout for --wait."`
 }
 
-func (c *WaitCmd) Run() error {
+func (c *NodeClaimCmd) Run() error {
 	c.resolveKubeconfig()
-	waitNodeClaimReady(c.K8sFlags, c.NodeClaim, c.Timeout)
+	dyn := mustDynamic(c.K8sFlags)
+	ctx := context.Background()
+
+	if c.Name != "" {
+		if c.Wait {
+			waitNodeClaimReady(dyn, ctx, c.Name, c.Timeout)
+		} else {
+			showNodeClaim(dyn, ctx, c.Name)
+		}
+		return nil
+	}
+
+	if c.Wait {
+		waitAllNodeClaimsReady(dyn, ctx, c.Timeout)
+	} else {
+		listNodeClaims(dyn, ctx)
+	}
 	return nil
+}
+
+func showNodeClaim(dyn dynamic.Interface, ctx context.Context, name string) {
+	item, err := dyn.Resource(gvrForKind("NodeClaim")).Get(ctx, name, metav1.GetOptions{})
+	fatalIf(err)
+	providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
+	fmt.Printf("NodeClaim/%s providerID=%s launched=%t registered=%t initialized=%t\n",
+		item.GetName(), providerID,
+		hasCondition(item, "Launched"),
+		hasCondition(item, "Registered"),
+		hasCondition(item, "Initialized"),
+	)
+}
+
+func listNodeClaims(dyn dynamic.Interface, ctx context.Context) {
+	nodeClaims := listByKind(ctx, dyn, "NodeClaim")
+	if len(nodeClaims) == 0 {
+		fmt.Println("No NodeClaims found.")
+		return
+	}
+	for _, item := range nodeClaims {
+		providerID, _, _ := unstructured.NestedString(item.Object, "status", "providerID")
+		fmt.Printf("NodeClaim/%s providerID=%s launched=%t registered=%t initialized=%t\n",
+			item.GetName(), providerID,
+			hasCondition(item, "Launched"),
+			hasCondition(item, "Registered"),
+			hasCondition(item, "Initialized"),
+		)
+	}
+}
+
+func waitAllNodeClaimsReady(dyn dynamic.Interface, ctx context.Context, timeout time.Duration) {
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		nodeClaims := listByKind(ctx, dyn, "NodeClaim")
+		if len(nodeClaims) == 0 {
+			return false, nil
+		}
+		for _, item := range nodeClaims {
+			if !hasCondition(item, "Initialized") {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	fatalIf(err)
+	fmt.Println("all nodeclaims ready")
 }
 
 // --- K8s helpers ---
@@ -231,9 +294,7 @@ func listStatus(flags K8sFlags) {
 	}
 }
 
-func waitNodeClaimReady(flags K8sFlags, name string, timeout time.Duration) {
-	dyn := mustDynamic(flags)
-	ctx := context.Background()
+func waitNodeClaimReady(dyn dynamic.Interface, ctx context.Context, name string, timeout time.Duration) {
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
 		item, err := dyn.Resource(gvrForKind("NodeClaim")).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {

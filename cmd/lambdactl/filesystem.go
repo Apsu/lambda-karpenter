@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"text/tabwriter"
+	"strings"
 )
 
 // FilesystemCmd is the parent command for filesystem management.
@@ -16,6 +15,7 @@ type FilesystemCmd struct {
 
 type FilesystemListCmd struct {
 	APIFlags
+	Region string `name:"region" help:"Filter by region name."`
 }
 
 func (c *FilesystemListCmd) Run() error {
@@ -24,14 +24,20 @@ func (c *FilesystemListCmd) Run() error {
 	items, err := client.ListFilesystems(ctx)
 	fatalIf(err)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tREGION\tMOUNT\tIN USE\tSIZE")
+	var rows [][]string
 	for _, fs := range items {
-		size := formatBytes(fs.BytesUsed)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\n",
-			fs.ID, fs.Name, fs.Region.Name, fs.MountPoint, fs.IsInUse, size)
+		if c.Region != "" && !strings.EqualFold(fs.Region.Name, c.Region) {
+			continue
+		}
+		inUse := "false"
+		if fs.IsInUse {
+			inUse = "true"
+		}
+		rows = append(rows, []string{
+			fs.ID, fs.Name, fs.Region.Name, fs.MountPoint, inUse, formatBytes(fs.BytesUsed),
+		})
 	}
-	w.Flush()
+	printListTable([]string{"ID", "NAME", "REGION", "MOUNT", "IN USE", "SIZE"}, rows)
 	return nil
 }
 
@@ -62,16 +68,18 @@ func (c *FilesystemCreateCmd) Run() error {
 	ctx := context.Background()
 	fs, err := client.CreateFilesystem(ctx, c.Name, c.Region)
 	fatalIf(err)
-	fmt.Printf("id:     %s\n", fs.ID)
-	fmt.Printf("name:   %s\n", fs.Name)
-	fmt.Printf("region: %s\n", fs.Region.Name)
-	fmt.Printf("mount:  %s\n", fs.MountPoint)
+	printDetailTable([][]string{
+		{"ID", fs.ID},
+		{"Name", fs.Name},
+		{"Region", fs.Region.Name},
+		{"Mount", fs.MountPoint},
+	})
 	return nil
 }
 
 type FilesystemDeleteCmd struct {
 	APIFlags
-	ID      string `name:"id" required:"" help:"Filesystem ID."`
+	ID      string `arg:"" help:"Filesystem ID."`
 	Confirm bool   `name:"confirm" help:"Skip interactive confirmation."`
 }
 
