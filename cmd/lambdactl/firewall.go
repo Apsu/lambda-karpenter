@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/lambdal/lambda-karpenter/internal/lambdaclient"
 )
@@ -24,6 +22,7 @@ type FirewallCmd struct {
 
 type FirewallListCmd struct {
 	APIFlags
+	Region string `name:"region" help:"Filter by region name."`
 }
 
 func (c *FirewallListCmd) Run() error {
@@ -32,19 +31,23 @@ func (c *FirewallListCmd) Run() error {
 	rulesets, err := client.ListFirewallRulesets(ctx)
 	fatalIf(err)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tREGION\tRULES\tINSTANCES")
+	var rows [][]string
 	for _, rs := range rulesets {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
-			rs.ID, rs.Name, rs.Region.Name, len(rs.Rules), len(rs.InstanceIDs))
+		if c.Region != "" && !strings.EqualFold(rs.Region.Name, c.Region) {
+			continue
+		}
+		rows = append(rows, []string{
+			rs.ID, rs.Name, rs.Region.Name,
+			strconv.Itoa(len(rs.Rules)), strconv.Itoa(len(rs.InstanceIDs)),
+		})
 	}
-	w.Flush()
+	printListTable([]string{"ID", "NAME", "REGION", "RULES", "INSTANCES"}, rows)
 	return nil
 }
 
 type FirewallGetCmd struct {
 	APIFlags
-	ID string `name:"id" required:"" help:"Firewall ruleset ID."`
+	ID string `arg:"" help:"Firewall ruleset ID."`
 }
 
 func (c *FirewallGetCmd) Run() error {
@@ -53,13 +56,16 @@ func (c *FirewallGetCmd) Run() error {
 	rs, err := client.GetFirewallRuleset(ctx, c.ID)
 	fatalIf(err)
 
-	fmt.Printf("ID:        %s\n", rs.ID)
-	fmt.Printf("Name:      %s\n", rs.Name)
-	fmt.Printf("Region:    %s\n", rs.Region.Name)
-	fmt.Printf("Created:   %s\n", rs.Created)
-	if len(rs.InstanceIDs) > 0 {
-		fmt.Printf("Instances: %s\n", strings.Join(rs.InstanceIDs, ", "))
+	fields := [][]string{
+		{"ID", rs.ID},
+		{"Name", rs.Name},
+		{"Region", rs.Region.Name},
+		{"Created", rs.Created},
 	}
+	if len(rs.InstanceIDs) > 0 {
+		fields = append(fields, []string{"Instances", strings.Join(rs.InstanceIDs, ", ")})
+	}
+	printDetailTable(fields)
 	fmt.Println()
 	printRules(rs.Rules)
 	return nil
@@ -84,7 +90,7 @@ func (c *FirewallCreateCmd) Run() error {
 
 type FirewallUpdateCmd struct {
 	APIFlags
-	ID    string   `name:"id" required:"" help:"Firewall ruleset ID."`
+	ID    string   `arg:"" help:"Firewall ruleset ID."`
 	Name  string   `name:"name" help:"New ruleset name."`
 	Rules []string `name:"rule" help:"Rule in proto:port-range:source:description form (repeatable). Replaces all rules."`
 }
@@ -109,7 +115,7 @@ func (c *FirewallUpdateCmd) Run() error {
 
 type FirewallDeleteCmd struct {
 	APIFlags
-	ID      string `name:"id" required:"" help:"Firewall ruleset ID."`
+	ID      string `arg:"" help:"Firewall ruleset ID."`
 	Confirm bool   `name:"confirm" help:"Skip interactive confirmation."`
 }
 
@@ -133,8 +139,10 @@ func (c *FirewallGlobalCmd) Run() error {
 	ctx := context.Background()
 	rs, err := client.GetGlobalFirewallRuleset(ctx)
 	fatalIf(err)
-	fmt.Printf("ID:   %s\n", rs.ID)
-	fmt.Printf("Name: %s\n", rs.Name)
+	printDetailTable([][]string{
+		{"ID", rs.ID},
+		{"Name", rs.Name},
+	})
 	fmt.Println()
 	printRules(rs.Rules)
 	return nil
@@ -159,8 +167,7 @@ func (c *FirewallGlobalUpdateCmd) Run() error {
 
 // printRules prints a table of firewall rules.
 func printRules(rules []lambdaclient.FirewallRule) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROTOCOL\tPORTS\tSOURCE\tDESCRIPTION")
+	var rows [][]string
 	for _, r := range rules {
 		ports := "-"
 		if len(r.PortRange) == 2 {
@@ -170,48 +177,81 @@ func printRules(rules []lambdaclient.FirewallRule) {
 				ports = fmt.Sprintf("%d-%d", r.PortRange[0], r.PortRange[1])
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Protocol, ports, r.SourceNetwork, r.Description)
+		rows = append(rows, []string{r.Protocol, ports, r.SourceNetwork, r.Description})
 	}
-	w.Flush()
+	printListTable([]string{"PROTOCOL", "PORTS", "SOURCE", "DESCRIPTION"}, rows)
 }
 
-// parseRuleFlags parses rule flags in "proto:ports:source:description" format.
-// Examples:
-//
-//	tcp:22:0.0.0.0/0:SSH
-//	tcp:6443:0.0.0.0/0:K8s API
-//	icmp::0.0.0.0/0:Ping
-//	all::10.0.0.0/8:Internal
-func parseRuleFlags(flags []string) []lambdaclient.FirewallRule {
-	var rules []lambdaclient.FirewallRule
-	for _, f := range flags {
-		parts := strings.SplitN(f, ":", 4)
-		if len(parts) < 3 {
-			fatalf("invalid rule %q: expected proto:ports:source[:description]", f)
+// parseRule parses a single "proto:ports:source[:description]" string.
+func parseRule(s string) (lambdaclient.FirewallRule, error) {
+	parts := strings.SplitN(s, ":", 4)
+	if len(parts) < 3 {
+		return lambdaclient.FirewallRule{}, fmt.Errorf("invalid rule %q: expected proto:ports:source[:description]", s)
+	}
+	rule := lambdaclient.FirewallRule{
+		Protocol:      parts[0],
+		SourceNetwork: parts[2],
+	}
+	if len(parts) == 4 {
+		rule.Description = parts[3]
+	}
+	if parts[1] != "" {
+		portParts := strings.SplitN(parts[1], "-", 2)
+		low, err := strconv.Atoi(portParts[0])
+		if err != nil {
+			return lambdaclient.FirewallRule{}, fmt.Errorf("invalid port in rule %q: %v", s, err)
 		}
-		rule := lambdaclient.FirewallRule{
-			Protocol:      parts[0],
-			SourceNetwork: parts[2],
-		}
-		if len(parts) == 4 {
-			rule.Description = parts[3]
-		}
-		if parts[1] != "" {
-			portParts := strings.SplitN(parts[1], "-", 2)
-			low, err := strconv.Atoi(portParts[0])
+		high := low
+		if len(portParts) == 2 {
+			high, err = strconv.Atoi(portParts[1])
 			if err != nil {
-				fatalf("invalid port in rule %q: %v", f, err)
+				return lambdaclient.FirewallRule{}, fmt.Errorf("invalid port range in rule %q: %v", s, err)
 			}
-			high := low
-			if len(portParts) == 2 {
-				high, err = strconv.Atoi(portParts[1])
-				if err != nil {
-					fatalf("invalid port range in rule %q: %v", f, err)
-				}
-			}
-			rule.PortRange = []int{low, high}
 		}
-		rules = append(rules, rule)
+		rule.PortRange = []int{low, high}
+	}
+	return rule, nil
+}
+
+// parseRules parses multiple rule strings, returning all rules or the first error.
+func parseRules(lines []string) ([]lambdaclient.FirewallRule, error) {
+	var rules []lambdaclient.FirewallRule
+	for _, line := range lines {
+		r, err := parseRule(line)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, nil
+}
+
+// parseRuleFlags parses rule flags, calling fatalf on error (for CLI use).
+func parseRuleFlags(flags []string) []lambdaclient.FirewallRule {
+	rules, err := parseRules(flags)
+	if err != nil {
+		fatalf("%v", err)
 	}
 	return rules
+}
+
+// formatRuleText converts rules back to the text format for pre-population.
+func formatRuleText(rules []lambdaclient.FirewallRule) string {
+	var lines []string
+	for _, r := range rules {
+		ports := ""
+		if len(r.PortRange) == 2 {
+			if r.PortRange[0] == r.PortRange[1] {
+				ports = strconv.Itoa(r.PortRange[0])
+			} else {
+				ports = fmt.Sprintf("%d-%d", r.PortRange[0], r.PortRange[1])
+			}
+		}
+		line := r.Protocol + ":" + ports + ":" + r.SourceNetwork
+		if r.Description != "" {
+			line += ":" + r.Description
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
