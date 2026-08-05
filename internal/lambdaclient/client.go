@@ -262,6 +262,19 @@ func (c *Client) ListInstanceTypes(ctx context.Context) (map[string]InstanceType
 	return resp.Data, nil
 }
 
+// ListRegions returns the full region catalog. Unlike the per-type
+// regions_with_capacity_available field, this lists every region a launch
+// can target regardless of momentary capacity.
+func (c *Client) ListRegions(ctx context.Context) ([]Region, error) {
+	var resp struct {
+		Data []Region `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/regions", nil, &resp, false); err != nil {
+		return nil, err
+	}
+	return resp.Data, nil
+}
+
 func (c *Client) ListImages(ctx context.Context) ([]Image, error) {
 	var resp struct {
 		Data []Image `json:"data"`

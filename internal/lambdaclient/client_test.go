@@ -223,6 +223,37 @@ func TestListInstanceTypes(t *testing.T) {
 	}
 }
 
+func TestListRegions(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/regions" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		assertAuth(t, r)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"name": "us-east-1", "description": "Virginia, USA"},
+				{"name": "us-east-3", "description": "Washington DC, USA"},
+			},
+		})
+	})
+	client := newTestClient(t, handler)
+	regions, err := client.ListRegions(context.Background())
+	if err != nil {
+		t.Fatalf("ListRegions: %v", err)
+	}
+	// us-east-3 must be present even though no type may currently have
+	// capacity there — that is the whole point of the regions catalog.
+	found := false
+	for _, r := range regions {
+		if r.Name == "us-east-3" && r.Description == "Washington DC, USA" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected us-east-3 in regions, got %#v", regions)
+	}
+}
+
 func TestListImages(t *testing.T) {
 	now := time.Now().UTC()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
