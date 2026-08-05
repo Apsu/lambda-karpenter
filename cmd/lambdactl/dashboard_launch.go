@@ -33,6 +33,7 @@ type launchResult struct {
 // launchDataMsg carries data fetched in the background for the launch form.
 type launchDataMsg struct {
 	types       map[string]lambdaclient.InstanceTypesItem
+	regions     []lambdaclient.Region
 	keys        []lambdaclient.SSHKey
 	images      []lambdaclient.Image
 	firewalls   []lambdaclient.FirewallRuleset
@@ -51,19 +52,20 @@ func (m *dashboardModel) openLaunchForm() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		types, typErr := client.ListInstanceTypes(ctx)
+		regions, regErr := client.ListRegions(ctx)
 		keys, keyErr := client.ListSSHKeys(ctx)
 		images, imgErr := client.ListImages(ctx)
 		firewalls, fwErr := client.ListFirewallRulesets(ctx)
 		filesystems, fsErr := client.ListFilesystems(ctx)
 
 		// Return first error.
-		for _, e := range []error{typErr, keyErr, imgErr, fwErr, fsErr} {
+		for _, e := range []error{typErr, regErr, keyErr, imgErr, fwErr, fsErr} {
 			if e != nil {
 				return launchDataMsg{err: e}
 			}
 		}
 		return launchDataMsg{
-			types: types, keys: keys, images: images,
+			types: types, regions: regions, keys: keys, images: images,
 			firewalls: firewalls, filesystems: filesystems,
 		}
 	}
@@ -97,48 +99,63 @@ func (m *dashboardModel) doLaunch(r launchResult) tea.Cmd {
 	}
 }
 
-// buildLaunchForm builds the huh.Form from fetched data.
-func buildLaunchForm(data launchDataMsg) *launchFormModel {
+// buildLaunchForm builds the huh.Form from fetched data. seenCapacity is the
+// session/disk record of which type→region pairs have ever shown capacity; it
+// lets the form distinguish a region where a type is offered but momentarily
+// empty from one where it has never been seen (likely not offered there).
+func buildLaunchForm(data launchDataMsg, seenCapacity map[string]map[string]bool) *launchFormModel {
 	lm := &launchFormModel{}
 
-	// Build region options from instance types.
-	regionSet := make(map[string]bool)
-	for _, item := range data.types {
-		for _, r := range item.Regions {
-			if r.Name != "" {
-				regionSet[r.Name] = true
-			}
+	// Build region options from the full region catalog rather than from each
+	// type's regions_with_capacity_available. Capacity for scarce GPUs (e.g.
+	// GH200 in us-east-3) flickers in and out, so gating the region list on
+	// momentary capacity would hide regions the user can legitimately target.
+	// The launch API returns a capacity error if none is available.
+	regionLabels := make(map[string]string, len(data.regions))
+	regionNames := make([]string, 0, len(data.regions))
+	for _, r := range data.regions {
+		if r.Name == "" {
+			continue
+		}
+		regionNames = append(regionNames, r.Name)
+		if r.Description != "" {
+			regionLabels[r.Name] = r.Name + " — " + r.Description
+		} else {
+			regionLabels[r.Name] = r.Name
 		}
 	}
-	regionNames := make([]string, 0, len(regionSet))
-	for r := range regionSet {
-		regionNames = append(regionNames, r)
+	// Defensive fallback: if the regions catalog came back empty, derive the
+	// list from whatever currently has capacity so the form is still usable.
+	if len(regionNames) == 0 {
+		seen := make(map[string]bool)
+		for _, item := range data.types {
+			for _, r := range item.Regions {
+				if r.Name != "" && !seen[r.Name] {
+					seen[r.Name] = true
+					regionNames = append(regionNames, r.Name)
+					regionLabels[r.Name] = r.Name
+				}
+			}
+		}
 	}
 	sort.Strings(regionNames)
 
 	regionOpts := make([]huh.Option[string], len(regionNames))
 	for i, r := range regionNames {
-		regionOpts[i] = huh.NewOption(r, r)
+		regionOpts[i] = huh.NewOption(regionLabels[r], r)
 	}
 
 	var result launchResult
 
-	// Instance type select uses OptionsFunc bound to &result.region so it
-	// re-evaluates whenever the selected region changes.
+	// Instance type select shows every type. When a region is selected, each
+	// type is annotated with whether it currently has capacity there — but all
+	// types remain selectable so the user can attempt a launch into transient
+	// capacity (the API rejects with a capacity error if none is available).
+	// Bound to &result.region via OptionsFunc so it re-evaluates on change.
 	typeSelectFunc := func() []huh.Option[string] {
-		var names []string
-		for name, item := range data.types {
-			if result.region == "" {
-				// No region selected yet — show all types.
-				names = append(names, name)
-				continue
-			}
-			for _, r := range item.Regions {
-				if r.Name == result.region {
-					names = append(names, name)
-					break
-				}
-			}
+		names := make([]string, 0, len(data.types))
+		for name := range data.types {
+			names = append(names, name)
 		}
 		sort.Strings(names)
 
@@ -147,6 +164,27 @@ func buildLaunchForm(data launchDataMsg) *launchFormModel {
 			item := data.types[name]
 			price := fmt.Sprintf("$%.2f/hr", float64(item.InstanceType.PriceCents)/100.0)
 			label := name + " — " + item.InstanceType.GPUDesc + " — " + price
+			if result.region != "" {
+				hasNow := false
+				for _, r := range item.Regions {
+					if r.Name == result.region {
+						hasNow = true
+						break
+					}
+				}
+				switch {
+				case hasNow:
+					label += " ✓ available"
+				case seenCapacity[name][result.region]:
+					// Seen with capacity here before, so it's offered in this
+					// region — just empty at the moment.
+					label += " · no capacity right now"
+				default:
+					// Never seen with capacity here this session or in prior
+					// runs; likely not offered in this region (still selectable).
+					label += " · no recent capacity"
+				}
+			}
 			opts[i] = huh.NewOption(label, name)
 		}
 		return opts
@@ -274,7 +312,7 @@ func (lm *launchFormModel) Update(msg tea.Msg) (tea.Cmd, bool) {
 			lm.err = data.err
 			return nil, true // done with error
 		}
-		built := buildLaunchForm(data)
+		built := buildLaunchForm(data, nil)
 		*lm = *built
 		return lm.form.Init(), false
 	}
@@ -327,7 +365,15 @@ func (m *dashboardModel) handleLaunchData(msg launchDataMsg) (tea.Model, tea.Cmd
 		m.launch = nil
 		return m, nil
 	}
-	built := buildLaunchForm(msg)
+	// Fold this fresh snapshot into the cache so the current capacity counts
+	// immediately, then annotate the form against the accumulated history.
+	var seen map[string]map[string]bool
+	changed := false
+	if m.capCache != nil {
+		changed = m.capCache.record(msg.types)
+		seen = m.capCache.seen
+	}
+	built := buildLaunchForm(msg, seen)
 	// Size the form to fit the overlay's inner dimensions.
 	frameW, frameH := overlayStyle.GetFrameSize()
 	innerW := m.overlayW - frameW
@@ -339,7 +385,11 @@ func (m *dashboardModel) handleLaunchData(msg launchDataMsg) (tea.Model, tea.Cmd
 		built.form.WithHeight(innerH)
 	}
 	m.launch = built
-	return m, m.launch.form.Init()
+	cmd := m.launch.form.Init()
+	if changed && m.capCache != nil {
+		return m, tea.Batch(cmd, m.capCache.persistCmd())
+	}
+	return m, cmd
 }
 
 // handleLaunchDone processes the result of a launch.

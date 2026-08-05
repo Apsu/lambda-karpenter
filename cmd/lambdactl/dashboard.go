@@ -93,6 +93,10 @@ type dashboardModel struct {
 	spinner spinner.Model
 	lastErr error
 
+	// capCache accumulates which type→region pairs have ever had capacity, so
+	// the launch form can tell "offered, currently empty" from "never seen".
+	capCache *capacityCache
+
 	statusMsg   string
 	refreshing  bool // true while a manual refresh is in flight
 	lastRefresh time.Time
@@ -128,6 +132,7 @@ func newDashboardModel(client *lambdaclient.Client) dashboardModel {
 		keys:     newKeyMap(),
 		spinner:  s,
 		interval: 30 * time.Second,
+		capCache: loadCapacityCache(),
 	}
 }
 
@@ -462,6 +467,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastRefresh = time.Now()
 		cmds = append(cmds, m.refreshLoaded(), m.tickRefresh())
 		return m, tea.Batch(cmds...)
+	}
+
+	// Learn from instance-type snapshots as they arrive (the Types tab polls
+	// every 30s), so the launch form's offered-region knowledge keeps growing
+	// even when the user never opens the launch form.
+	if tmsg, ok := msg.(typesLoadedMsg); ok && tmsg.err == nil && m.capCache != nil {
+		if m.capCache.record(tmsg.items) {
+			cmds = append(cmds, m.capCache.persistCmd())
+		}
 	}
 
 	// Delegate to all tabs so they can handle their own messages.

@@ -35,6 +35,10 @@ func (c *InstanceTypeListCmd) Run() error {
 	if !c.Watch {
 		items, err := client.ListInstanceTypes(context.Background())
 		fatalIf(err)
+		cache := loadCapacityCache()
+		if cache.record(items) {
+			_ = cache.save()
+		}
 		fmt.Println(c.renderTable(items, nil, termWidth()))
 		return nil
 	}
@@ -50,6 +54,7 @@ func (c *InstanceTypeListCmd) Run() error {
 type watchModel struct {
 	client   *lambdaclient.Client
 	cmd      *InstanceTypeListCmd
+	capCache *capacityCache
 	spinner  spinner.Model
 	items    map[string]lambdaclient.InstanceTypesItem
 	prev     map[string]string // name → sorted regions
@@ -76,6 +81,7 @@ func newWatchModel(client *lambdaclient.Client, cmd *InstanceTypeListCmd) watchM
 	return watchModel{
 		client:   client,
 		cmd:      cmd,
+		capCache: loadCapacityCache(),
 		spinner:  s,
 		interval: cmd.Interval,
 		width:    120,
@@ -128,6 +134,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.items = msg.items
+
+		// Feed the launch form's capacity history from the watch poll — this
+		// is the workflow that catches scarce-GPU capacity windows.
+		if m.capCache != nil && m.capCache.record(msg.items) {
+			_ = m.capCache.save()
+		}
 
 		cur := m.cmd.snapshot(msg.items)
 		if m.prev == nil {
